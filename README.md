@@ -2,7 +2,9 @@
 
 A personal computer-vision project: build one clean, unified, leakage-safe dataset for **road damage detection** from six public sources, then train a detector on it.
 
-> Status: data preparation phase. Raw data is downloaded and versioned with DVC. Four of five labeled sources are converted into one unified dataset (**16,971 images**). The Pothole Mix pothole masks are next, then cleaning, splitting and training.
+> Status: data preparation phase. Raw data is downloaded and versioned with DVC. All five labeled sources are converted into one unified dataset (**17,732 images**). Cleaning, splitting, EDA and training are next.
+
+Repository: <https://github.com/Botkraker/RoadScanCV>
 
 ## Goal
 
@@ -31,6 +33,7 @@ The end goal is to flag **severe** anomalies, not every hairline crack. No sourc
 | Class map | `classes.yaml` is the single source of truth | Every conversion script reads it, nothing is hard-coded |
 | RDD2020 codes | Only the 4 official classes: D00, D10, D20 (cracks) and D40 (pothole) | Matches the paper; D43/D44 are paint wear, not damage. Images with dropped codes are kept as background |
 | Excluded masks | Crack500, EdmCrack600, GAPs384 | Thin diagonal cracks make misleading boxes; GAPs384 is academic-only and EdmCrack600 non-commercial |
+| Pothole Mix class encoding | Class = mask colour: red pothole, green crack. Only images with red and no green are used | Boxing only the red blobs of an image that also shows green cracks would teach "visible cracks are background" |
 | Image IDs | Running number (`000001`), assigned once and never changed | Short names; source, original path and group live in `manifest.csv`. Stable IDs keep labels and splits valid across rebuilds |
 | Video frames | Every 8th frame | 48-frame clips are near-identical; using all frames would make one phone-camera source 72% of the data |
 | Splits | By group (video), stratified by class, made later from the manifest | Frames of one video must not straddle train and test (leakage) |
@@ -45,7 +48,7 @@ The end goal is to flag **severe** anomalies, not every hairline crack. No sourc
 | **RDD2020** (Czech, India, Japan) | Dashcam images | Pascal VOC XML | `D00` `D10` `D20` `D40` (extra codes dropped) |
 | **Water-Filled and Dry Potholes** (Mendeley) | Images + 2 dashcam videos | Pascal VOC XML and YOLO txt | pothole |
 | **Potholes, Cracks and Manholes** (Kaggle) | 640x360 images | YOLO boxes, quadrilaterals, COCO JSON | pothole, crack, manhole |
-| **Pothole Mix / SHREC 2022** | Images + RGB-D videos | Binary segmentation masks | pothole, crack |
+| **Pothole Mix / SHREC 2022** | Images + colour videos (no depth, not used) | RGB segmentation masks, class = colour (red pothole, green crack) | pothole, crack |
 | **Pothole Videos** (Mendeley) | Videos with `rgb/` and `mask/` | Masks | pothole |
 | **PathCare** (Mendeley) | Images + videos of road faults | None found | unlabeled |
 
@@ -64,13 +67,29 @@ Each source is converted by its own script in `src/` into `data/processed/` (`im
 | RDD2020 (Czech, India) | **done** | `src/convert_rdd.py` | 10,535 images; 3,384 pothole and 5,192 crack boxes |
 | Water-Filled and Dry Potholes | **done** | `src/convert_mendeley.py` | 713 images; 1,153 pothole boxes (4 boxes dropped: coordinates far outside the image, same error in the original XML) |
 | Kaggle potholes/cracks/manholes | **done** | `src/convert_kaggle.py` | 2,009 images; 1,261 pothole, 2,518 crack, 957 manhole boxes (1 zero-height box dropped). 430 rebuilt clip groups |
-| Pothole Mix (pothole masks) | todo | | |
+| Pothole Mix (pothole masks) | **done** | `src/convert_shrec.py` | 761 images, 1,431 pothole boxes (red mask blobs). Skipped: 1,875 images with crack pixels, 3 with no pothole. Its videos are not used |
 | Pothole Videos (frames + masks) | **done** | `src/convert_pothole_videos.py` | 619 videos, every 8th frame: 3,714 images, 1 pothole box each (bounding box of the mask blob). `group_id` = video |
 | RDD2020 Japan, PathCare | unlabeled, kept aside | | |
 
-Current unified dataset (`data/processed/manifest.csv`): **16,971 images** = 10,535 RDD2020 + 3,714 Pothole Videos + 2,009 Kaggle + 713 Mendeley.
+Current unified dataset (`data/processed/manifest.csv`): **17,732 images** = 10,535 RDD2020 + 3,714 Pothole Videos + 2,009 Kaggle + 761 Pothole Mix + 713 Mendeley.
 
-Box totals so far: **9,512 pothole, 7,710 crack, 957 manhole**. Manholes come only from Kaggle, so class 2 is the weakest.
+Boxes per source (the dataset's class balance, built from `manifest.csv`):
+
+| Source | Images | pothole | crack | manhole |
+|---|---|---|---|---|
+| RDD2020 (Czech, India) | 10,535 | 3,384 | 5,192 | 0 |
+| Pothole Videos | 3,714 | 3,714 | 0 | 0 |
+| Kaggle | 2,009 | 1,261 | 2,518 | 957 |
+| Pothole Mix | 761 | 1,431 | 0 | 0 |
+| Mendeley | 713 | 1,153 | 0 | 0 |
+| **Total** | **17,732** | **10,943** | **7,710** | **957** |
+
+What this table says:
+
+- **Manholes** exist only in Kaggle (957 boxes, about 5% of all boxes), so class 2 will be the weakest.
+- **Cracks** come almost only from RDD (67%) and Kaggle. The other sources give no crack labels, so crack detection depends on those two.
+- **6,240 images (35%) have no boxes.** They are RDD images without damage (or with only dropped codes) and serve as background examples.
+- The manifest holds **12,775 groups** (`group_id`): one per still image or clip, one per video, and rebuilt clip groups for Kaggle and Pothole Mix.
 
 Update this table whenever a source is converted.
 
@@ -79,6 +98,8 @@ Update this table whenever a source is converted.
 - Mendeley: 4 pothole boxes in `Pothole-261/262/268/271` lie outside the image (x up to 2609 on a 392 px image). The original XML has the same error, so these boxes are dropped.
 - Pothole Videos are close-up phone shots from about 130 cm above the road, unlike the dashcam views in RDD and Mendeley. Every frame contains a pothole, so they add no background examples.
 - Kaggle: 1,907 of 2,009 images are consecutive VLC video snapshots (`vlcsnap-*`) with no clip id. Consecutive frames are often near-identical (median pHash distance 16, against 30 for random pairs), so `group_id` is rebuilt by starting a new group whenever the picture changes a lot (distance > 24). Most images show the orange car hood at the bottom, a dataset bias to keep in mind.
+- Pothole Mix masks are RGB, not binary: a per-channel value of 0/255 hid the fact that red (255,0,0) and green (0,255,0) encode different classes. `cracks-and-potholes-in-road` is mixed (1,639 crack-only, 322 pothole-only, 236 both images), so only its 322 pothole-only images are used. Some kept images may still show faint cracks that were not annotated.
+- Pothole Mix groups are rebuilt with pHash on consecutive images, as for Kaggle.
 - Images differ in size per source (RDD 600x600, Mendeley 392x806, videos 1080x1080); YOLO resizes at training time.
 - Each conversion is checked against an independent count (for example RDD boxes against the raw XML counts), and mask-to-box output is checked by drawing boxes on random frames.
 
@@ -91,7 +112,7 @@ Progress: `[x]` done, `[ ]` to do.
 3. [x] **Version data**: DVC tracks `data/raw`; Git tracks only the small `.dvc` pointer files. (`data/processed` is not versioned yet.)
 4. [x] **Inventory**: count files and read the labels of every source.
 5. [x] **Unify classes**: `classes.yaml`.
-6. [ ] **Convert formats** (4 of 5 labeled sources done): RDD VOC, Mendeley YOLO, Pothole Videos masks and Kaggle YOLO are done. Only the Pothole Mix pothole masks (`findContours`) remain.
+6. [x] **Convert formats**: RDD VOC, Mendeley YOLO, Pothole Videos masks, Kaggle YOLO and Pothole Mix masks.
 7. [ ] **Clean**: remove duplicates (imagehash), flag blurry/dark images (CleanVision).
 8. [ ] **Split without leakage**: `StratifiedGroupKFold` / `GroupShuffleSplit` on `group_id` from the manifest.
 9. [ ] **EDA**: class balance, box sizes, per-source statistics (pandas, matplotlib).
@@ -110,6 +131,7 @@ src/
   convert_mendeley.py      water-filled/dry potholes (YOLO txt, validated)
   convert_pothole_videos.py  rgb+mask videos -> sampled frames + boxes
   convert_kaggle.py        Kaggle YOLO boxes, with rebuilt clip groups
+  convert_shrec.py         Pothole Mix colour masks -> pothole boxes
 data/raw/                  original downloads (tracked by DVC, not Git)
 data/processed/
   images/  labels/         unified dataset, one label .txt per image (same ID)
@@ -135,6 +157,7 @@ python src/convert_rdd.py
 python src/convert_mendeley.py
 python src/convert_pothole_videos.py   # about 15 minutes
 python src/convert_kaggle.py
+python src/convert_shrec.py
 ```
 
 ## Credits and licences
