@@ -14,11 +14,8 @@ sources:
     D00: crack        # longitudinal
     D10: crack        # transverse
     D20: crack        # alligator
-    D01: crack        # longitudinal construction joint
-    D11: crack        # lateral construction joint
-    D50: manhole      # utility hole (only 28 boxes)
-    # dropped boxes (image kept as background): D43 crosswalk blur,
-    # D44 white-line blur (paint wear, not damage), D0w0 (typo)
+    # Only the 4 official RDD2020 classes (Arya et al. 2021). Every other code
+    # (D01, D11, D43, D44, D50, D0w0) is dropped; the image is kept as background.
 
   mendeley_potholes:  # VOC XML + YOLO txt, class id 0
     pothole: pothole

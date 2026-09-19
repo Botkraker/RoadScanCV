@@ -20,7 +20,7 @@ The sources use different label formats and class names, so most of the work is 
 
 | Source | Content | Label format | Classes |
 |---|---|---|---|
-| **RDD2020** (Czech, India, Japan) | Dashcam images | Pascal VOC XML | `D00` `D10` `D20` `D40` (+ rare codes) |
+| **RDD2020** (Czech, India, Japan) | Dashcam images | Pascal VOC XML | `D00` `D10` `D20` `D40` (extra codes dropped) |
 | **Water-Filled and Dry Potholes** (Mendeley) | Images + 2 dashcam videos | Pascal VOC XML and YOLO txt | pothole |
 | **Potholes, Cracks and Manholes** (Kaggle) | 640x360 images | YOLO boxes, quadrilaterals, COCO JSON | pothole, crack, manhole |
 | **Pothole Mix / SHREC 2022** | Images + RGB-D videos | Binary segmentation masks | pothole, crack |
@@ -75,17 +75,17 @@ dvc pull      # once a remote is configured
 
 This project builds on public datasets. All credit for collecting and annotating the data belongs to the original authors. Please cite them if you use this work.
 
-- **RDD2020**: D. Arya, H. Maeda, S. K. Ghosh, D. Toshniwal, H. Omata, T. Kashiyama, Y. Sekimoto, *RDD2020: An annotated image dataset for automatic road damage detection using deep learning*, Data in Brief, 2021. Code and links: <https://github.com/sekilab/RoadDamageDetector>
+- **RDD2020**: D. Arya, H. Maeda, S. K. Ghosh, D. Toshniwal, Y. Sekimoto, *RDD2020: An annotated image dataset for automatic road damage detection using deep learning*, Data in Brief, 2021, DOI [10.1016/j.dib.2021.107133](https://doi.org/10.1016/j.dib.2021.107133). We use only the four official classes: D00 longitudinal crack, D10 transverse crack, D20 alligator crack, D40 pothole. Code and links: <https://github.com/sekilab/RoadDamageDetector>
 - **Road Damage Dataset: Potholes, Cracks and Manholes** (Kaggle): <https://www.kaggle.com/datasets/lorenzoarcioni/road-damage-dataset-potholes-cracks-and-manholes>
-- **Pothole Mix / SHREC 2022 (pothole and crack detection using images and RGB-D data)**: assembled by the SHREC 2022 organisers from five public datasets, which must also be credited:
+- **Pothole Mix** (SHREC 2022 pothole and crack segmentation data): A. Ranieri, E. Moscoso Thompson, S. Biasotti, Mendeley Data, 15 Feb 2022, DOI [10.17632/kfth5g2xk3.1](https://doi.org/10.17632/kfth5g2xk3.1), licence CC BY 4.0. It was assembled from five public datasets, which must also be credited:
   - Crack500 and GAPs384 (Yang et al., *Feature Pyramid and Hierarchical Boosting Network for Pavement Crack Detection*, IEEE T-ITS 2019). GAPs384 is **academic use only**.
   - EdmCrack600 (Mei et al., Automation in Construction 2020). **Commercial use is not allowed.**
   - Pothole-600: <https://sites.google.com/view/pothole-600>
   - Cracks and Potholes in Road Images: <https://github.com/biankatpas/Cracks-and-Potholes-in-Road-Images-Dataset>
   - CNR Road Dataset
-- **An Annotated Water-Filled, and Dry Potholes Dataset for Deep Learning Applications** (Mendeley Data). Authors and DOI: TODO, copy from the dataset page.
-- **Pothole Videos** (Mendeley Data). Authors and DOI: TODO.
-- **PathCare: A Dataset for Road Fault Diagnosis** (Mendeley Data). Authors and DOI: TODO.
+- **An Annotated Water-Filled, and Dry Potholes Dataset for Deep Learning Applications**: J. Dib, K. Sirlantzis, G. Howells, Mendeley Data, 2 Mar 2023, DOI [10.17632/tp95cdvgm8.1](https://doi.org/10.17632/tp95cdvgm8.1), CC BY 4.0.
+- **Pothole Videos**: M. Ihsan, A. Harjoko, M. A. Amrizal, Mendeley Data, 25 Mar 2024, DOI [10.17632/5bwfg4v4cd.3](https://doi.org/10.17632/5bwfg4v4cd.3), CC BY 4.0.
+- **PathCare: A Dataset for Road Fault Diagnosis**: B. Abro, S. Jatoi, M. Z. Shaikh, E. Nava Baro, B. S. Chowdhry, M. Milanova, Mendeley Data, 29 Oct 2024, DOI [10.17632/6p52w7d5xd.2](https://doi.org/10.17632/6p52w7d5xd.2), CC BY 4.0.
 
 **Licence note:** some sources restrict commercial use. This project is for personal and academic use. Check each source's terms before redistributing the data or a model trained on it.
 
