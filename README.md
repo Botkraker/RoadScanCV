@@ -114,6 +114,9 @@ Update this table whenever a source is converted.
 | test | 2,664 (15%) | 1,769 | 1,610 | 1,152 | 153 | 935 |
 
   Every source is spread about 70/15/15 across the splits. Caveat: near-duplicates are only merged up to pHash distance 6, so a few loosely similar RDD frames can still sit on different sides. The original dataset splits (`orig_split`) are ignored.
+- Box sizes (px at YOLO's 640 input, EDA step 2): potholes are bimodal (median 103 px, 17% small) because dashcam sources (RDD, Kaggle) give medium boxes while the close-up sources (Pothole Videos 96% large, Mendeley 68% large) give large ones. Cracks: median 84 px, 5% small. **Manholes: median 33 px, 49% small**, so they are both the rarest class and the hardest to see.
+- Boxes per image (EDA step 3): 1.1 on average; 35% of images (6,230) are empty, and **all of them come from RDD** (59% of RDD images), so the model's only examples of a normal road come from one source. Pothole Videos always have exactly 1 box. Kaggle is the crowded source (mean 2.4 boxes, 36% of images with 3+ boxes) and holds most of the 1,647 images that mix classes.
+- Sources look very different (EDA step 4, `reports/eda/04_source_samples.jpg`): RDD and Kaggle are road scenes (dashcam); Mendeley, Pothole Videos and most of Pothole Mix are close-ups. Median brightness runs from 106 (Kaggle) to 174 (Pothole Videos) and median sharpness from 246 (Pothole Mix) to 1,171 (Pothole Videos). Each source also carries an easy-to-learn fingerprint: an orange car hood in every Kaggle frame, a "DNIT" logo in part of Pothole Mix, date stamps and grayscale images in Mendeley. Since every manhole comes from Kaggle, a model could learn "orange hood" instead of "manhole". Mitigations to consider in training: colour/brightness/blur augmentation, cropping out the hood, and reporting metrics per source.
 - Images differ in size per source (RDD 600x600, Mendeley 392x806, videos 1080x1080); YOLO resizes at training time.
 - Each conversion is checked against an independent count (for example RDD boxes against the raw XML counts), and mask-to-box output is checked by drawing boxes on random frames.
 
@@ -123,17 +126,37 @@ Progress: `[x]` done, `[ ]` to do.
 
 1. [x] **Environment**: Python 3.11 + uv, Git, VS Code.
 2. [x] **Download** the sources (Kaggle, Mendeley, RDD2020).
-3. [x] **Version data**: DVC tracks `data/raw` (14.4 GB) and `data/processed` (35,469 files, 3.1 GB); Git tracks only the small `.dvc` pointer files. The DVC remote `origin` is DagsHub. Only `data/processed` is pushed: it is the valuable artifact (cleaning, labels, splits), while `data/raw` is the public original downloads and can be re-downloaded from the sources in the credits.
+3. [x] **Version data**: DVC tracks `data/raw` (14.4 GB) and `data/processed` (35,469 files, 3.1 GB); Git tracks only the small `.dvc` pointer files. The DVC remote `origin` is DagsHub. Only `data/processed` is meant to be pushed (verify with `dvc status -c data/processed.dvc`): it is the valuable artifact (cleaning, labels, splits), while `data/raw` is the public original downloads and can be re-downloaded from the sources in the credits.
 4. [x] **Inventory**: count files and read the labels of every source.
 5. [x] **Unify classes**: `classes.yaml`.
 6. [x] **Convert formats**: RDD VOC, Mendeley YOLO, Pothole Videos masks, Kaggle YOLO and Pothole Mix masks.
 7. [x] **Clean**: `src/audit_images.py` measures every image (md5, pHash, blur, brightness); `src/clean.py` marks duplicates and blurry images as `excluded` and merges near-duplicate groups.
 8. [x] **Split without leakage**: `src/split.py` (`StratifiedGroupKFold`, 20 folds: 14 train, 3 val, 3 test) on `group_id`. Writes the `split` column, `train/val/test.txt` and `data.yaml`.
-9. [ ] **EDA** (in progress; figures in `reports/eda/`): [x] class balance, [ ] box sizes, [ ] boxes per image and empty images, [ ] per-source differences, [ ] image properties.
+9. [x] **EDA** (done; figures in `reports/eda/`): [x] class balance, [x] box sizes, [x] boxes per image and empty images, [x] per-source differences and image properties (size, brightness, blur, visual samples).
 10. [ ] **Visual label audit**: browse labels per source in FiftyOne; fix errors in CVAT or Label Studio only if needed.
 11. [ ] **Automate**: a single `make data` (or `just`) rebuild, plus pre-commit and ruff.
-12. [ ] **Train**: baseline YOLO on Kaggle Notebooks or Colab GPU.
+12. [ ] **Train**: baseline YOLO on Kaggle Notebooks or Colab GPU, following the experiment plan below.
 13. [ ] **Stage 2 (optional)**: severity classifier on box crops.
+
+## Known risks and experiment plan
+
+What the EDA showed, ranked by how much it threatens a model used on real dashcam video:
+
+1. **Two kinds of potholes.** Pothole sizes have two humps: dashcam sources (Kaggle, RDD, Pothole Mix: medians 30-58 px) and close-up sources (Mendeley 141 px, Pothole Videos 314 px). Pothole Videos alone is 34% of pothole boxes, always has exactly 1 box per image and no empty images, so it can dominate what "pothole" means and flatter test scores.
+2. **Source fingerprints (shortcut learning).** Orange car hood in every Kaggle frame (and every manhole comes from Kaggle), "DNIT" logo in part of Pothole Mix, date stamps and grayscale images in Mendeley.
+3. **All empty images come from RDD** (6,230 images, 35% of the data). The empty share is above the 0-10% background-image range that Ultralytics suggests, so the concern is variety, not quantity: false alarms on non-RDD-looking roads are untested.
+4. **Manholes are rare and small** (954 boxes, median 33 px, 49% under 32 px) and come from one source. Manholes are not the goal (severe damage is), but the class is kept as a distractor: unlabeled, a dark round cover would be learned as background and could turn into pothole false alarms. Report it separately and treat pothole and crack results as the main metrics.
+5. **Label noise:** crowded Kaggle images (up to 13 boxes, 36% with 3+) probably have missing labels, and box styles differ per source (very large RDD crack boxes). To check in the FiftyOne audit (step 10).
+
+Decision on Pothole Videos: keep it for now and let an experiment decide. Runs, all evaluated on a **dashcam-only** validation set (RDD + Kaggle; `val_dashcam.txt` / `test_dashcam.txt` still to be created) and per source:
+
+| Run | Training data | Question |
+|---|---|---|
+| A | everything, default augmentation | baseline |
+| B | without Pothole Videos | does removing it help on dashcam images? |
+| C | everything, stronger scale augmentation (higher `scale`, mosaic) | can shrinking the close-ups fix the size gap? |
+
+Extra levers if needed: keep fewer Pothole Videos frames (every 16th instead of 8th), colour/brightness/blur augmentation, crop the hood from Kaggle, oversample RDD empties in `train.txt` only (never in val/test), and later copy-paste augmentation (paste masked close-up potholes, shrunk, onto empty RDD roads). Unlabeled data (RDD Japan, PathCare) can later supply candidate empty images: a first model screens them and candidates are verified in FiftyOne.
 
 ## Project layout
 
@@ -148,6 +171,10 @@ src/
   convert_shrec.py         Pothole Mix colour masks -> pothole boxes
   audit_images.py          read-only: md5, pHash, blur, brightness per image -> reports/image_audit.csv
   eda_01_balance.py        EDA step 1: boxes per class -> reports/eda/01_class_balance.png
+  eda_02_box_size.py       EDA step 2: box sizes in px at 640 input -> reports/eda/02_box_sizes.png
+  eda_03_per_image.py      EDA step 3: boxes per image, empty images -> reports/eda/03_boxes_per_image.png
+  eda_04_sources.py        EDA step 4: image properties per source + visual samples -> reports/eda/04_source_samples.jpg
+                           (reports/eda/02b_pothole_size_by_source.png: pothole sizes coloured by source)
   clean.py                 applies the cleaning rules to manifest.csv (marks, never deletes)
   split.py                 group-based 70/15/15 split -> manifest, train/val/test.txt, data.yaml
 reports/eda/               EDA figures (in Git)
