@@ -10,7 +10,7 @@ OUT = ROOT / "data" / "processed"
 MANIFEST = OUT / "manifest.csv"
 
 COLUMNS = ["id", "source", "group_id", "orig_path", "ext", "width", "height",
-           "n_pothole", "n_crack", "n_manhole", "orig_split", "group_id_orig", "excluded"]
+           "n_pothole", "n_crack", "n_manhole", "orig_split", "group_id_orig", "excluded", "split"]
 
 
 def load_classes():

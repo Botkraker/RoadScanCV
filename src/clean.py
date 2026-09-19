@@ -41,6 +41,7 @@ def main():
         r["group_id"] = r.get("group_id_orig") or r["group_id"]
         r["group_id_orig"] = r["group_id"]
         r["excluded"] = ""
+        r["split"] = ""  # groups may change, so any earlier split is stale
     ids = [r["id"] for r in rows]
 
     # 1. exact duplicates

@@ -2,7 +2,7 @@
 
 A personal computer-vision project: build one clean, unified, leakage-safe dataset for **road damage detection** from six public sources, then train a detector on it.
 
-> Status: data preparation phase. Raw data is downloaded and versioned with DVC. All five labeled sources are converted into one unified dataset (**17,732 images**). Cleaning is done (69 images excluded, groups merged); splitting, EDA and training are next.
+> Status: data preparation phase. Raw data is downloaded and versioned with DVC. All five labeled sources are converted into one unified dataset (**17,732 images**). Cleaning and the leakage-safe train/val/test split are done; EDA, a visual label audit and training are next.
 
 Repository: <https://github.com/Botkraker/RoadScanCV>
 
@@ -36,7 +36,7 @@ The end goal is to flag **severe** anomalies, not every hairline crack. No sourc
 | Pothole Mix class encoding | Class = mask colour: red pothole, green crack. Only images with red and no green are used | Boxing only the red blobs of an image that also shows green cracks would teach "visible cracks are background" |
 | Image IDs | Running number (`000001`), assigned once and never changed | Short names; source, original path and group live in `manifest.csv`. Stable IDs keep labels and splits valid across rebuilds |
 | Video frames | Every 8th frame | 48-frame clips are near-identical; using all frames would make one phone-camera source 72% of the data |
-| Splits | By group (video), stratified by class, made later from the manifest | Frames of one video must not straddle train and test (leakage) |
+| Splits | 70/15/15 by `group_id`, stratified by source + dominant class (`src/split.py`, seed 42) | No group (video, clip, merged near-duplicates) is on two sides, so test measures unseen scenes. The rarest class present decides an image's stratum (manhole > crack > pothole > background), so manholes reach every split |
 | Mask to box | Threshold at 127, remove speckle, bounding box of the largest blob | Masks stored in mp4 are lossy, so exact 255 matching fails |
 | Missing clip ids (Kaggle) | Rebuild groups with pHash on consecutive frames | Prevents near-duplicate frames from leaking across splits |
 | Cleaning | **Mark, never delete**: `excluded` column in `manifest.csv`, files stay on disk | Image ids stay stable and the step is reversible and re-runnable |
@@ -105,6 +105,15 @@ Update this table whenever a source is converted.
 - Pothole Mix masks are RGB, not binary: a per-channel value of 0/255 hid the fact that red (255,0,0) and green (0,255,0) encode different classes. `cracks-and-potholes-in-road` is mixed (1,639 crack-only, 322 pothole-only, 236 both images), so only its 322 pothole-only images are used. Some kept images may still show faint cracks that were not annotated.
 - Pothole Mix groups are rebuilt with pHash on consecutive images, as for Kaggle.
 - Cleaning result: 17,732 images, of which **69 excluded** (59 exact duplicates, 10 blurry) and **17,663 kept**. Groups went from 12,775 to 11,927 after merging near-duplicates (largest merged group: 63 images). Kept boxes: 10,852 pothole, 7,700 crack, 954 manhole. Exact duplicates are mostly Mendeley (50), then Kaggle (5), Pothole Videos (4; videos `0220` and `0221` are the same clip).
+- Split result (17,663 kept images, 11,927 groups; checked: 0 groups and 0 identical files in more than one split, every listed image has its label, Ultralytics loads `data.yaml`):
+
+| Split | Images | Groups | pothole | crack | manhole | background |
+|---|---|---|---|---|---|---|
+| train | 12,354 (70%) | 8,369 | 7,421 | 5,287 | 644 | 4,359 |
+| val | 2,645 (15%) | 1,780 | 1,821 | 1,261 | 157 | 936 |
+| test | 2,664 (15%) | 1,769 | 1,610 | 1,152 | 153 | 935 |
+
+  Every source is spread about 70/15/15 across the splits. Caveat: near-duplicates are only merged up to pHash distance 6, so a few loosely similar RDD frames can still sit on different sides. The original dataset splits (`orig_split`) are ignored.
 - Images differ in size per source (RDD 600x600, Mendeley 392x806, videos 1080x1080); YOLO resizes at training time.
 - Each conversion is checked against an independent count (for example RDD boxes against the raw XML counts), and mask-to-box output is checked by drawing boxes on random frames.
 
@@ -119,7 +128,7 @@ Progress: `[x]` done, `[ ]` to do.
 5. [x] **Unify classes**: `classes.yaml`.
 6. [x] **Convert formats**: RDD VOC, Mendeley YOLO, Pothole Videos masks, Kaggle YOLO and Pothole Mix masks.
 7. [x] **Clean**: `src/audit_images.py` measures every image (md5, pHash, blur, brightness); `src/clean.py` marks duplicates and blurry images as `excluded` and merges near-duplicate groups.
-8. [ ] **Split without leakage**: `StratifiedGroupKFold` / `GroupShuffleSplit` on `group_id` from the manifest.
+8. [x] **Split without leakage**: `src/split.py` (`StratifiedGroupKFold`, 20 folds: 14 train, 3 val, 3 test) on `group_id`. Writes the `split` column, `train/val/test.txt` and `data.yaml`.
 9. [ ] **EDA**: class balance, box sizes, per-source statistics (pandas, matplotlib).
 10. [ ] **Visual label audit**: browse labels per source in FiftyOne; fix errors in CVAT or Label Studio only if needed.
 11. [ ] **Automate**: a single `make data` (or `just`) rebuild, plus pre-commit and ruff.
@@ -139,12 +148,15 @@ src/
   convert_shrec.py         Pothole Mix colour masks -> pothole boxes
   audit_images.py          read-only: md5, pHash, blur, brightness per image -> reports/image_audit.csv
   clean.py                 applies the cleaning rules to manifest.csv (marks, never deletes)
+  split.py                 group-based 70/15/15 split -> manifest, train/val/test.txt, data.yaml
 reports/                   regenerable audit output (not in Git)
 data/raw/                  original downloads (tracked by DVC, not Git)
 data/processed/
   images/  labels/         unified dataset, one label .txt per image (same ID)
   manifest.csv             id, source, group_id, orig_path, ext, size, box counts, orig_split,
-                           group_id_orig (before merging), excluded (reason, empty = kept)
+                           group_id_orig (before merging), excluded (reason, empty = kept), split
+  train.txt val.txt test.txt  image lists per split (excluded images are in none)
+  data.yaml                Ultralytics dataset file (classes + lists)
 .dvc/                      DVC configuration
 requirements.txt
 README.md
@@ -169,6 +181,7 @@ python src/convert_kaggle.py
 python src/convert_shrec.py
 python src/audit_images.py             # about 2 minutes
 python src/clean.py
+python src/split.py
 ```
 
 ## Credits and licences
