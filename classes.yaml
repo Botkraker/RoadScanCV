@@ -1,0 +1,44 @@
+# Stage 1 (anomaly detector) class map.
+# Every conversion script reads this file; nothing is hard-coded elsewhere.
+# Severity is NOT a class here: it is Stage 2, a separate classifier on box crops.
+
+classes:
+  0: pothole
+  1: crack
+  2: manhole
+
+# source -> {source class -> target class name}. Anything not listed is dropped.
+sources:
+  rdd2020:            # Pascal VOC XML, train/Czech + train/India only
+    D40: pothole
+    D00: crack        # longitudinal
+    D10: crack        # transverse
+    D20: crack        # alligator
+    D01: crack        # longitudinal construction joint
+    D11: crack        # lateral construction joint
+    D50: manhole      # utility hole (only 28 boxes)
+    # dropped boxes (image kept as background): D43 crosswalk blur,
+    # D44 white-line blur (paint wear, not damage), D0w0 (typo)
+
+  mendeley_potholes:  # VOC XML + YOLO txt, class id 0
+    pothole: pothole
+
+  kaggle_pcm:         # labels-YOLO/ boxes
+    0: pothole
+    1: crack
+    2: manhole
+
+  shrec_pothole_mix:  # masks -> boxes via OpenCV findContours
+    pothole600: pothole
+    cracks-and-potholes-in-road: pothole   # verify what its masks contain first
+    # excluded: crack500, edmcrack600, gaps384 (thin cracks give poor boxes;
+    #           GAPs384 academic-only, EdmCrack600 non-commercial)
+
+  pothole_videos:     # rgb/ + mask/ -> frames -> boxes (potholes)
+    mask: pothole
+
+unlabeled:            # kept aside, never trained on as-is
+  - PathCare
+  - rdd2020 Japan train
+  - rdd2020 test1/test2
+  - shrec/videos      # color clips only, no masks, no depth

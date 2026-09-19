@@ -1,0 +1,37 @@
+# RoadScan - Python dependencies
+# Recommended: Python 3.11 (some CV packages lag behind the newest Python).
+# Setup:  uv venv --python 3.11 && uv pip install -r requirements.txt
+
+# Data versioning
+dvc>=3.50
+
+# Core data handling
+numpy
+pandas
+pillow
+pyyaml
+tqdm
+lxml                # parse Pascal VOC XML
+
+# Computer vision / conversion
+opencv-python       # video frames, mask -> contours -> boxes
+supervision         # VOC/COCO/YOLO format conversion helpers
+ultralytics         # YOLO training + segmentation converters
+
+# Data quality
+imagehash           # perceptual-hash de-duplication
+cleanvision         # near-duplicates, blurry and dark images
+scikit-learn        # StratifiedGroupKFold / GroupShuffleSplit
+
+# Analysis and visual label audit
+matplotlib
+seaborn
+jupyter
+fiftyone
+
+# Dataset download
+kaggle
+
+# Code quality
+ruff
+pre-commit
