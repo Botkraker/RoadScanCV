@@ -25,11 +25,15 @@ sources:
     1: crack
     2: manhole
 
-  shrec_pothole_mix:  # masks -> boxes via OpenCV findContours
-    pothole600: pothole
-    cracks-and-potholes-in-road: pothole   # verify what its masks contain first
-    # excluded: crack500, edmcrack600, gaps384 (thin cracks give poor boxes;
-    #           GAPs384 academic-only, EdmCrack600 non-commercial)
+  shrec_pothole_mix:  # RGB masks; the class is the mask COLOUR. Boxes via OpenCV findContours
+    colours:
+      red: pothole    # (255,0,0)
+      green: crack    # (0,255,0), NOT used: scattered speckles give poor boxes
+    folders: [pothole600, cnr-road-dataset, cracks-and-potholes-in-road]
+    # Images with green (crack) pixels are skipped entirely: boxing only the red
+    # blobs would leave visible cracks unlabeled, i.e. teach "crack = background".
+    # excluded folders (cracks only): crack500, edmcrack600, gaps384
+    #   (thin cracks give poor boxes; GAPs384 academic-only, EdmCrack600 non-commercial)
 
   pothole_videos:     # rgb/ + mask/ -> frames -> boxes (potholes)
     mask: pothole
