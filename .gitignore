@@ -1,0 +1,7 @@
+
+# regenerable audit output
+reports/
+
+# python
+__pycache__/
+*.pyc
