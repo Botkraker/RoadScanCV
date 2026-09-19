@@ -1,6 +1,7 @@
 
 # regenerable audit output
-reports/
+reports/*
+!reports/eda/
 
 # python
 __pycache__/

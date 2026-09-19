@@ -4,7 +4,7 @@ A personal computer-vision project: build one clean, unified, leakage-safe datas
 
 > Status: data preparation phase. Raw data is downloaded and versioned with DVC. All five labeled sources are converted into one unified dataset (**17,732 images**). Cleaning and the leakage-safe train/val/test split are done; EDA, a visual label audit and training are next.
 
-Repository: <https://github.com/Botkraker/RoadScanCV>
+Code: <https://github.com/Botkraker/RoadScanCV> | Data (DVC remote): <https://dagshub.com/Botkraker/RoadScan>
 
 ## Goal
 
@@ -123,13 +123,13 @@ Progress: `[x]` done, `[ ]` to do.
 
 1. [x] **Environment**: Python 3.11 + uv, Git, VS Code.
 2. [x] **Download** the sources (Kaggle, Mendeley, RDD2020).
-3. [x] **Version data**: DVC tracks `data/raw` and `data/processed` (35,465 files, 3.1 GB); Git tracks only the small `.dvc` pointer files. No DVC remote is configured yet, so the data itself is only in the local DVC cache: add a remote and `dvc push` to back it up.
+3. [x] **Version data**: DVC tracks `data/raw` (14.4 GB) and `data/processed` (35,469 files, 3.1 GB); Git tracks only the small `.dvc` pointer files. The DVC remote `origin` is DagsHub. Only `data/processed` is pushed: it is the valuable artifact (cleaning, labels, splits), while `data/raw` is the public original downloads and can be re-downloaded from the sources in the credits.
 4. [x] **Inventory**: count files and read the labels of every source.
 5. [x] **Unify classes**: `classes.yaml`.
 6. [x] **Convert formats**: RDD VOC, Mendeley YOLO, Pothole Videos masks, Kaggle YOLO and Pothole Mix masks.
 7. [x] **Clean**: `src/audit_images.py` measures every image (md5, pHash, blur, brightness); `src/clean.py` marks duplicates and blurry images as `excluded` and merges near-duplicate groups.
 8. [x] **Split without leakage**: `src/split.py` (`StratifiedGroupKFold`, 20 folds: 14 train, 3 val, 3 test) on `group_id`. Writes the `split` column, `train/val/test.txt` and `data.yaml`.
-9. [ ] **EDA**: class balance, box sizes, per-source statistics (pandas, matplotlib).
+9. [ ] **EDA** (in progress; figures in `reports/eda/`): [x] class balance, [ ] box sizes, [ ] boxes per image and empty images, [ ] per-source differences, [ ] image properties.
 10. [ ] **Visual label audit**: browse labels per source in FiftyOne; fix errors in CVAT or Label Studio only if needed.
 11. [ ] **Automate**: a single `make data` (or `just`) rebuild, plus pre-commit and ruff.
 12. [ ] **Train**: baseline YOLO on Kaggle Notebooks or Colab GPU.
@@ -147,9 +147,11 @@ src/
   convert_kaggle.py        Kaggle YOLO boxes, with rebuilt clip groups
   convert_shrec.py         Pothole Mix colour masks -> pothole boxes
   audit_images.py          read-only: md5, pHash, blur, brightness per image -> reports/image_audit.csv
+  eda_01_balance.py        EDA step 1: boxes per class -> reports/eda/01_class_balance.png
   clean.py                 applies the cleaning rules to manifest.csv (marks, never deletes)
   split.py                 group-based 70/15/15 split -> manifest, train/val/test.txt, data.yaml
-reports/                   regenerable audit output (not in Git)
+reports/eda/               EDA figures (in Git)
+reports/image_audit.csv    regenerable audit output (not in Git)
 data/raw/                  original downloads (tracked by DVC, not Git)
 data/processed/
   images/  labels/         unified dataset, one label .txt per image (same ID)
@@ -168,7 +170,7 @@ README.md
 uv venv .venv311 --python 3.11
 .\.venv311\Scripts\Activate.ps1
 uv pip install -r requirements.txt
-dvc pull      # once a remote is configured
+dvc pull data/processed.dvc   # downloads the unified dataset from DagsHub (3.1 GB)
 ```
 
 Rebuild the processed data so far (each script supports `--dry-run` to count without writing):
