@@ -23,6 +23,7 @@ from common import OUT, load_classes, read_manifest, write_manifest
 N_FOLDS = 20           # 3 folds test + 3 val + 14 train = 15% / 15% / 70%
 SEED = 42
 TEST_FOLDS, VAL_FOLDS = {0, 1, 2}, {3, 4, 5}
+DASHCAM = {"rdd2020", "kaggle_pcm"}   # sources that look like the real use case
 
 
 def dominant(r):
@@ -82,6 +83,12 @@ def main():
     for sp in ("train", "val", "test"):
         (OUT / f"{sp}.txt").write_text(
             "\n".join(f"./images/{r['id']}{r['ext']}" for r in kept if r["split"] == sp) + "\n")
+    # extra lists for the experiments: dashcam-only evaluation, and training without Pothole Videos
+    for name, keep in {"val_dashcam": lambda r: r["split"] == "val" and r["source"] in DASHCAM,
+                       "test_dashcam": lambda r: r["split"] == "test" and r["source"] in DASHCAM,
+                       "train_no_videos": lambda r: r["split"] == "train" and r["source"] != "pothole_videos"}.items():
+        (OUT / f"{name}.txt").write_text(
+            "\n".join(f"./images/{r['id']}{r['ext']}" for r in kept if keep(r)) + "\n")
     name_to_id, _ = load_classes()
     # no "path" key: Ultralytics then resolves the lists relative to this file
     (OUT / "data.yaml").write_text(yaml.safe_dump(

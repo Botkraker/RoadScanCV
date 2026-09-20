@@ -135,7 +135,7 @@ Progress: `[x]` done, `[ ]` to do.
 9. [x] **EDA** (done; figures in `reports/eda/`): [x] class balance, [x] box sizes, [x] boxes per image and empty images, [x] per-source differences and image properties (size, brightness, blur, visual samples).
 10. [ ] **Visual label audit** (in progress): [x] browse in FiftyOne (`src/fiftyone_app.py`), [x] estimate the error rate from a random sample (`src/audit_sample.py`, sheets in `reports/audit/`; results below), [ ] model-assisted cleanup after the baseline (see findings below); fix errors in CVAT or Label Studio only if needed.
 11. [ ] **Automate**: a single `make data` (or `just`) rebuild, plus pre-commit and ruff.
-12. [ ] **Train**: baseline YOLO on Kaggle Notebooks or Colab GPU, following the experiment plan below.
+12. [ ] **Train**: `src/train.py` (YOLO11s, runs A/B/C; smoke-tested on CPU) on Kaggle Notebooks or Colab GPU, following the experiment plan below. The local GTX 1650 (4 GB) has no CUDA PyTorch installed, so the real runs go to Kaggle (T4, free quota).
 13. [ ] **Stage 2 (optional)**: severity classifier on box crops.
 
 ## Known risks and experiment plan
@@ -148,7 +148,7 @@ What the EDA showed, ranked by how much it threatens a model used on real dashca
 4. **Manholes are rare and small** (954 boxes, median 33 px, 49% under 32 px) and come from one source. Manholes are not the goal (severe damage is), but the class is kept as a distractor: unlabeled, a dark round cover would be learned as background and could turn into pothole false alarms. Report it separately and treat pothole and crack results as the main metrics.
 5. **Label noise:** crowded Kaggle images (up to 13 boxes, 36% with 3+) probably have missing labels, and box styles differ per source (very large RDD crack boxes). To check in the FiftyOne audit (step 10).
 
-Decision on Pothole Videos: keep it for now and let an experiment decide. Runs, all evaluated on a **dashcam-only** validation set (RDD + Kaggle; `val_dashcam.txt` / `test_dashcam.txt` still to be created) and per source:
+Decision on Pothole Videos: keep it for now and let an experiment decide. Runs, all evaluated on a **dashcam-only** validation set (RDD + Kaggle; `val_dashcam.txt` / `test_dashcam.txt`, written by `src/split.py` together with `train_no_videos.txt`) and per source:
 
 | Run | Training data | Question |
 |---|---|---|
@@ -195,6 +195,7 @@ src/
   eda_02_box_size.py       EDA step 2: box sizes in px at 640 input -> reports/eda/02_box_sizes.png
   eda_03_per_image.py      EDA step 3: boxes per image, empty images -> reports/eda/03_boxes_per_image.png
   fiftyone_app.py          loads the dataset into FiftyOne (boxes, source, split, size) and opens the app
+  train.py                 YOLO training + evaluation (all val, dashcam-only val, class-agnostic); runs A/B/C via flags
   audit_sample.py          random sample of crack boxes -> numbered review sheets in reports/audit/
   eda_04_sources.py        EDA step 4: image properties per source + visual samples -> reports/eda/04_source_samples.jpg
                            (reports/eda/02b_pothole_size_by_source.png: pothole sizes coloured by source)

@@ -6,3 +6,7 @@ reports/*
 # python
 __pycache__/
 *.pyc
+
+# training runs and downloaded weights
+runs/
+*.pt
