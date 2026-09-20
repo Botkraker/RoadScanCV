@@ -133,7 +133,7 @@ Progress: `[x]` done, `[ ]` to do.
 7. [x] **Clean**: `src/audit_images.py` measures every image (md5, pHash, blur, brightness); `src/clean.py` marks duplicates and blurry images as `excluded` and merges near-duplicate groups.
 8. [x] **Split without leakage**: `src/split.py` (`StratifiedGroupKFold`, 20 folds: 14 train, 3 val, 3 test) on `group_id`. Writes the `split` column, `train/val/test.txt` and `data.yaml`.
 9. [x] **EDA** (done; figures in `reports/eda/`): [x] class balance, [x] box sizes, [x] boxes per image and empty images, [x] per-source differences and image properties (size, brightness, blur, visual samples).
-10. [ ] **Visual label audit**: browse labels per source in FiftyOne; fix errors in CVAT or Label Studio only if needed.
+10. [ ] **Visual label audit** (in progress): [x] browse in FiftyOne (`src/fiftyone_app.py`), [x] estimate the error rate from a random sample (`src/audit_sample.py`, sheets in `reports/audit/`; results below), [ ] model-assisted cleanup after the baseline (see findings below); fix errors in CVAT or Label Studio only if needed.
 11. [ ] **Automate**: a single `make data` (or `just`) rebuild, plus pre-commit and ruff.
 12. [ ] **Train**: baseline YOLO on Kaggle Notebooks or Colab GPU, following the experiment plan below.
 13. [ ] **Stage 2 (optional)**: severity classifier on box crops.
@@ -158,6 +158,27 @@ Decision on Pothole Videos: keep it for now and let an experiment decide. Runs, 
 
 Extra levers if needed: keep fewer Pothole Videos frames (every 16th instead of 8th), colour/brightness/blur augmentation, crop the hood from Kaggle, oversample RDD empties in `train.txt` only (never in val/test), and later copy-paste augmentation (paste masked close-up potholes, shrunk, onto empty RDD roads). Unlabeled data (RDD Japan, PathCare) can later supply candidate empty images: a first model screens them and candidates are verified in FiftyOne.
 
+## Label audit findings (FiftyOne, first pass)
+
+- **Manholes** looked correct.
+- **Potholes are often labeled as cracks**, in both RDD and Kaggle. This is partly label ambiguity, not only mistakes: alligator cracking (RDD D20) is the stage before potholes and often contains them, Kaggle's "crack" covers broad damaged or patched surface, and annotators disagree. Only about 3% of crack boxes overlap a pothole box in the same image (RDD 42 of 1,292, Kaggle 41 of 924), so the problem is potholes labeled *only* as cracks.
+- Several RDD crack boxes are very large rectangles over plain road with no visible damage (bad fit).
+- The error rate is unknown until measured: the app browsing was not random. `src/audit_sample.py` draws a fixed random sample (seed 2026) of 40 crack boxes per source into numbered sheets (`reports/audit/sheet_*.jpg`) plus `reports/audit/crack_sample.csv` (which also records the hidden RDD code D00/D10/D20 of each box). A reviewer labels each box pothole / crack / unclear and the rates are estimated per source and per code.
+
+  **Result** (40 boxes, 20 per source, 95% Wilson intervals; verdicts in `reports/audit/crack_sample.csv`):
+
+  | Source (crack boxes) | fair crack | pothole | manhole | no visible damage |
+  |---|---|---|---|---|
+  | Kaggle | 65% (43-82%) | **25% (11-47%)** | 5% (1-24%) | 5% (1-24%) |
+  | RDD | 65% (43-82%) | 0% (0-16%) | 0% | **35% (18-57%)** |
+
+  RDD by code: D00 7 fair / 3 no damage, D10 1 / 0, D20 5 / 4. Kaggle also had boxes containing a manhole plus crack (1), a patched pothole (1), and an extra pothole inside the crack box (2). Scaled to all boxes this is roughly 600 Kaggle "crack" boxes that are potholes (280-1,200) and roughly 1,800 RDD crack boxes with no visible damage (900-3,000). Two different problems: **Kaggle "crack" often means damaged or patched surface including potholes; RDD crack boxes are often loose or drawn on plain road.** Caveats: small sample, wide intervals, and "no visible damage" can hide hairline cracks that are hard to see in small crops. It only checks boxes that exist; it does not measure missing potholes (two were noticed).
+
+Decisions:
+
+- **Accept the noise for now and measure it (A + B).** Hand-relabeling thousands of boxes is not realistic; after the baseline, its confident disagreements with the labels are the best candidates to review (model-assisted cleanup, C).
+- **Report two numbers**: per-class results (pothole / crack / manhole and the confusion matrix) and **class-agnostic** results (any damage, ignoring which type). Stage 1 only has to flag an anomaly, so a pothole called "crack" still flags the road; the class-agnostic number is the main Stage 1 metric.
+
 ## Project layout
 
 ```
@@ -173,6 +194,8 @@ src/
   eda_01_balance.py        EDA step 1: boxes per class -> reports/eda/01_class_balance.png
   eda_02_box_size.py       EDA step 2: box sizes in px at 640 input -> reports/eda/02_box_sizes.png
   eda_03_per_image.py      EDA step 3: boxes per image, empty images -> reports/eda/03_boxes_per_image.png
+  fiftyone_app.py          loads the dataset into FiftyOne (boxes, source, split, size) and opens the app
+  audit_sample.py          random sample of crack boxes -> numbered review sheets in reports/audit/
   eda_04_sources.py        EDA step 4: image properties per source + visual samples -> reports/eda/04_source_samples.jpg
                            (reports/eda/02b_pothole_size_by_source.png: pothole sizes coloured by source)
   clean.py                 applies the cleaning rules to manifest.csv (marks, never deletes)
