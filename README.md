@@ -148,6 +148,20 @@ What the EDA showed, ranked by how much it threatens a model used on real dashca
 4. **Manholes are rare and small** (954 boxes, median 33 px, 49% under 32 px) and come from one source. Manholes are not the goal (severe damage is), but the class is kept as a distractor: unlabeled, a dark round cover would be learned as background and could turn into pothole false alarms. Report it separately and treat pothole and crack results as the main metrics.
 5. **Label noise:** crowded Kaggle images (up to 13 boxes, 36% with 3+) probably have missing labels, and box styles differ per source (very large RDD crack boxes). To check in the FiftyOne audit (step 10).
 
+### Results
+
+Run A (YOLO11s, 30 epochs, imgsz 640, default augmentation, Colab T4, 2.15 h; inference 12.8 ms/image), mAP@0.5 on the validation lists:
+
+| Validation list | all | pothole | crack | manhole |
+|---|---|---|---|---|
+| val (all sources, 2,645 images) | 0.546 | 0.706 | 0.327 | 0.602 |
+| val_dashcam (RDD + Kaggle, 1,882 images) | 0.446 | **0.406** | 0.328 | 0.605 |
+
+- **Potholes score 0.71 on all sources but only 0.41 on dashcam images.** The close-up sources inflate the pothole number, as the EDA predicted, so `val_dashcam` is the number to trust.
+- Crack is the weakest class (recall 0.26), consistent with the label noise found in the audit.
+- Validation mAP was still rising at epoch 30, so all runs are under-trained; A/B/C use the same 30 epochs so they stay comparable.
+- The first class-agnostic figure (0.406) was lower than the class-aware one because the same object predicted as two classes counted as a false positive; `src/train.py` now uses class-agnostic NMS for that evaluation (`--eval-only` re-evaluates saved weights).
+
 Decision on Pothole Videos: keep it for now and let an experiment decide. Runs, all evaluated on a **dashcam-only** validation set (RDD + Kaggle; `val_dashcam.txt` / `test_dashcam.txt`, written by `src/split.py` together with `train_no_videos.txt`) and per source:
 
 | Run | Training data | Question |

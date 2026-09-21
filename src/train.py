@@ -40,7 +40,8 @@ def limit(data_dir, name, n, tmp):
 
 def evaluate(model, data_dir, run_dir, val, imgsz, batch, device, single_cls=False):
     r = model.val(data=make_yaml(data_dir, "train", val, run_dir / f"eval_{val}.yaml"), imgsz=imgsz,
-                  batch=batch, device=device, single_cls=single_cls, plots=False, verbose=False)
+                  batch=batch, device=device, single_cls=single_cls, agnostic_nms=single_cls,  # one box per object
+                  plots=False, verbose=False)
     row = {"list": val + (" (class-agnostic)" if single_cls else ""), "mAP50": r.box.map50, "mAP50-95": r.box.map}
     if not single_cls:
         for i, c in enumerate(r.box.ap_class_index):
@@ -61,20 +62,21 @@ def main():
     ap.add_argument("--device", default=None, help="0 for the first GPU, cpu, or empty for auto")
     ap.add_argument("--smoke", action="store_true", help="tiny CPU run to check the pipeline")
     ap.add_argument("--test", action="store_true", help="also evaluate the test lists")
+    ap.add_argument("--eval-only", action="store_true", help="skip training, evaluate runs/<run>/weights/best.pt")
     a = ap.parse_args()
 
     dd, run_dir = a.data_dir.resolve(), ROOT / "runs" / a.run
     lists = {"val": "val", "val_dashcam": "val_dashcam"}
     fraction = 1.0
     if a.smoke:
-        a.epochs, a.imgsz, a.batch, a.device = 1, 320, 8, "cpu"
+        a.epochs, a.imgsz, a.batch, a.device = 1, 320, 8, a.device or "cpu"   # --smoke --device 0 tests the GPU
         lists = {k: limit(dd, v, 60, "smoke") for k, v in lists.items()}
         a.train = limit(dd, a.train, 400, "smoke")
 
-    model = YOLO(a.model)
-    model.train(data=make_yaml(dd, a.train, lists["val"], run_dir / "data.yaml"), epochs=a.epochs,
-                imgsz=a.imgsz, batch=a.batch, scale=a.scale, device=a.device, fraction=fraction,
-                project=str(ROOT / "runs"), name=a.run, exist_ok=True, workers=2, plots=False)
+    if not a.eval_only:
+        YOLO(a.model).train(data=make_yaml(dd, a.train, lists["val"], run_dir / "data.yaml"), epochs=a.epochs,
+                            imgsz=a.imgsz, batch=a.batch, scale=a.scale, device=a.device, fraction=fraction,
+                            project=str(ROOT / "runs"), name=a.run, exist_ok=True, workers=2, plots=False)
 
     best = YOLO(str(ROOT / "runs" / a.run / "weights" / "best.pt"))
     rows = [evaluate(best, dd, run_dir, lists["val"], a.imgsz, a.batch, a.device),
@@ -86,7 +88,7 @@ def main():
     import pandas as pd
     df = pd.DataFrame(rows).round(3)
     print(f"\nRUN {a.run}: train={a.train} scale={a.scale} epochs={a.epochs} imgsz={a.imgsz}\n{df.to_string(index=False)}")
-    df.to_csv(run_dir / "results.csv", index=False)
+    df.to_csv(run_dir / "metrics.csv", index=False)  # results.csv is Ultralytics's own training curve
 
 
 if __name__ == "__main__":
