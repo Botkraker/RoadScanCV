@@ -1,4 +1,3 @@
-
 # regenerable audit output
 reports/*
 !reports/eda/
@@ -10,3 +9,6 @@ __pycache__/
 # training runs and downloaded weights
 runs/
 *.pt
+
+# your own footage: faces and number plates, never commit
+data/own/
