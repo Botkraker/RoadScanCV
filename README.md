@@ -2,7 +2,7 @@
 
 A personal computer-vision project: build one clean, unified, leakage-safe dataset for **road damage detection** from six public sources, then train a detector on it.
 
-> Status: data preparation phase. Raw data is downloaded and versioned with DVC. All five labeled sources are converted into one unified dataset (**17,732 images**). Cleaning and the leakage-safe train/val/test split are done; EDA, a visual label audit and training are next.
+> Status: dataset built and two baselines trained. 17,732 images from five public sources are unified, cleaned and split without leakage; EDA and a label audit are done. Run A reaches mAP@0.5 **0.45** on dashcam validation but only **0.08** on my own street footage, so the current work is closing that domain gap with 148 self-labeled frames.
 
 Code: <https://github.com/Botkraker/RoadScanCV> | Data (DVC remote): <https://dagshub.com/Botkraker/RoadScan>
 
@@ -135,8 +135,9 @@ Progress: `[x]` done, `[ ]` to do.
 9. [x] **EDA** (done; figures in `reports/eda/`): [x] class balance, [x] box sizes, [x] boxes per image and empty images, [x] per-source differences and image properties (size, brightness, blur, visual samples).
 10. [ ] **Visual label audit** (in progress): [x] browse in FiftyOne (`src/fiftyone_app.py`), [x] estimate the error rate from a random sample (`src/audit_sample.py`, sheets in `reports/audit/`; results below), [ ] model-assisted cleanup after the baseline (see findings below); fix errors in CVAT or Label Studio only if needed.
 11. [ ] **Automate**: a single `make data` (or `just`) rebuild, plus pre-commit and ruff.
-12. [ ] **Train**: `src/train.py` (YOLO11s, runs A/B/C; smoke-tested on CPU) on Kaggle Notebooks or Colab GPU, following the experiment plan below. The local GTX 1650 (4 GB) has no CUDA PyTorch installed, so the real runs go to Kaggle (T4, free quota).
-13. [ ] **Stage 2 (optional)**: severity classifier on box crops.
+12. [x] **Train**: `src/train.py` (YOLO11s). Runs A and B on a Colab T4 (~2 h each, batch 16). Run C (stronger scale augmentation) was dropped after B showed the close-up data does not hurt dashcam results. The local GTX 1650 (4 GB) also trains with the CUDA build of PyTorch, but AMP is disabled on this card and batch 16 runs out of memory (it falls back to 4), so 30 epochs would take ~8 h there.
+13. [ ] **Own-domain adaptation** (in progress): record video, label frames (`src/own_frames.py` + Label Studio), score (`src/own_eval.py`), fine-tune (`src/finetune_own.py`).
+14. [ ] **Stage 2 (optional)**: severity classifier on box crops.
 
 ## Known risks and experiment plan
 
@@ -148,7 +149,7 @@ What the EDA showed, ranked by how much it threatens a model used on real dashca
 4. **Manholes are rare and small** (954 boxes, median 33 px, 49% under 32 px) and come from one source. Manholes are not the goal (severe damage is), but the class is kept as a distractor: unlabeled, a dark round cover would be learned as background and could turn into pothole false alarms. Report it separately and treat pothole and crack results as the main metrics.
 5. **Label noise:** crowded Kaggle images (up to 13 boxes, 36% with 3+) probably have missing labels, and box styles differ per source (very large RDD crack boxes). To check in the FiftyOne audit (step 10).
 
-### Results
+### Results on public validation data
 
 Run A (YOLO11s, 30 epochs, imgsz 640, default augmentation, Colab T4, 2.15 h; inference 12.8 ms/image), mAP@0.5 on the validation lists:
 
@@ -162,13 +163,20 @@ Run A (YOLO11s, 30 epochs, imgsz 640, default augmentation, Colab T4, 2.15 h; in
 - Validation mAP was still rising at epoch 30, so all runs are under-trained; A/B/C use the same 30 epochs so they stay comparable.
 - The first class-agnostic figure (0.406) was lower than the class-aware one because the same object predicted as two classes counted as a false positive; `src/train.py` now uses class-agnostic NMS for that evaluation (`--eval-only` re-evaluates saved weights).
 
-Decision on Pothole Videos: keep it for now and let an experiment decide. Runs, all evaluated on a **dashcam-only** validation set (RDD + Kaggle; `val_dashcam.txt` / `test_dashcam.txt`, written by `src/split.py` together with `train_no_videos.txt`) and per source:
+Run B (same setup as A, trained **without** Pothole Videos, `train_no_videos`), mAP@0.5:
 
-| Run | Training data | Question |
-|---|---|---|
-| A | everything, default augmentation | baseline |
-| B | without Pothole Videos | does removing it help on dashcam images? |
-| C | everything, stronger scale augmentation (higher `scale`, mosaic) | can shrinking the close-ups fix the size gap? |
+| Run | val (all) | val_dashcam | pothole (dashcam) | crack (dashcam) | manhole (dashcam) | dashcam, class-agnostic* |
+|---|---|---|---|---|---|---|
+| A (all data) | 0.546 | 0.446 | 0.406 | 0.328 | 0.605 | 0.406 |
+| B (no Pothole Videos) | 0.473 | 0.452 | 0.386 | 0.325 | 0.644 | 0.395 |
+
+\*measured with the older code (no class-agnostic NMS), the same for A and B, so the two are comparable.
+
+- On **all sources** B is much worse (potholes 0.71 to 0.45), because the validation set contains the easy close-up frames B never saw.
+- On the **dashcam-only list, which is what counts, the difference is within noise** (mAP 0.446 vs 0.452; pothole -0.02, manhole +0.04 on only 157 manhole boxes; one run each). Pothole Videos neither help nor hurt dashcam performance measurably, so it stays in the training set, but only `val_dashcam` numbers are reported.
+- Confusion matrix of run A on `val_dashcam` (conf 0.25): only 3% of manholes are predicted as potholes, so the frequent manhole-as-pothole mistakes seen on the own video are **domain shift** (every training manhole comes from Kaggle: forward camera, orange hood), not a general inability to tell them apart. Recall is low: 34% of potholes and 30% of cracks are found at conf 0.25.
+
+**Decision on Pothole Videos: keep it.** Run B (trained without it) was no better on dashcam validation and clearly worse on my own footage, so the close-up data does not distort the model. Run C (stronger scale augmentation) was therefore dropped.
 
 Extra levers if needed: keep fewer Pothole Videos frames (every 16th instead of 8th), colour/brightness/blur augmentation, crop the hood from Kaggle, oversample RDD empties in `train.txt` only (never in val/test), and later copy-paste augmentation (paste masked close-up potholes, shrunk, onto empty RDD roads). Unlabeled data (RDD Japan, PathCare) can later supply candidate empty images: a first model screens them and candidates are verified in FiftyOne.
 
@@ -193,6 +201,43 @@ Decisions:
 - **Accept the noise for now and measure it (A + B).** Hand-relabeling thousands of boxes is not realistic; after the baseline, its confident disagreements with the labels are the best candidates to review (model-assisted cleanup, C).
 - **Report two numbers**: per-class results (pothole / crack / manhole and the confusion matrix) and **class-agnostic** results (any damage, ignoring which type). Stage 1 only has to flag an anomaly, so a pothole called "crack" still flags the road; the class-agnostic number is the main Stage 1 metric.
 
+### Results on my own footage (the real test)
+
+A 3.2-minute 4K video of a Tunisian street, recorded by hand (`data/own_video/`, not in Git: faces and number plates). 152 frames were extracted every 1.25 s (`src/own_frames.py`), prelabeled with run A's predictions and corrected by hand in Label Studio: **148 frames, 160 boxes (65 manhole, 51 crack, 44 pothole)**. Frames are split **by time**: the last 25% of the clip is the test set, separated from the training part by a 5 s gap, so near-identical neighbouring frames cannot leak.
+
+mAP@0.5 on those frames (`src/own_eval.py`):
+
+| Model | own_test (38 frames) | all 148 frames | any damage (class-agnostic) |
+|---|---|---|---|
+| A | 0.081 | 0.079 | 0.179 |
+| B (no Pothole Videos) | 0.044 | 0.060 | 0.116 |
+
+- **The domain gap is the dominant problem**: 0.45 on dashcam validation vs 0.08 here. Different camera height, harsh sun, urban Tunisian street.
+- **Manholes are the clearest failure**: the model predicted 6 where I labeled 65, and reads many of them as potholes. On dashcam validation only 3% of manholes are mistaken for potholes, so this is domain shift (every training manhole comes from Kaggle: forward camera, orange hood), not an inability to tell the classes apart.
+- A beats B here, which is why Pothole Videos stays in the training set: its close-up frames resemble a low, near-ground camera.
+- Caveat: 30 boxes in the test segment. These are order-of-magnitude numbers, not decimals to compare.
+
+Fine-tuning (`src/finetune_own.py`): start from run A, train on the 110 own training frames repeated 10x mixed with 2,000 random general images (mosaic off, lr0 0.001, 15 epochs), and score on the 38 held-out test frames (30 boxes).
+
+| Model | inference | mAP50 | recall | precision | pothole | crack | manhole |
+|---|---|---|---|---|---|---|---|
+| A | 640, conf 0.25 | 0.037 | 0.085 | 0.30 | 0.062 | 0.048 | 0.000 |
+| A | 640, conf 0.10 | 0.070 | 0.162 | 0.14 | 0.142 | 0.070 | 0.000 |
+| A_ft | 640, conf 0.25 | 0.150 | 0.176 | 0.53 | 0.000 | 0.095 | 0.355 |
+| A_ft | 1280, conf 0.10 | **0.210** | **0.315** | 0.24 | 0.019 | 0.168 | 0.442 |
+
+**The headline mAP gain is misleading.** Counting boxes at conf 0.25 on the 38 test frames: I labeled 30, run A found 7, the fine-tuned model found 5. Fine-tuning did not improve detection; it changed the class of the few detections (pothole -> manhole) to match my labels. Manhole AP went 0.005 -> 0.489 and pothole AP collapsed 0.150 -> 0.018, because my own labels are 65 manhole vs 44 pothole, so the model learned "dark round thing on this street = manhole".
+
+**The real problem is recall: the best configuration finds under a third of the damage.** Contributing causes:
+
+- My boxes are smaller than the public training data: pothole median 45 px at 640 input vs 103 px in training, crack 51 vs 84 px (1920x1080 frames downscaled to 640). 40% of my boxes are under 32 px.
+- I labelled more thoroughly than the public annotators (faint cracks, patched surface), so the bar is higher than the training data teaches.
+- Only 110 training frames from a single street.
+
+**Practical setting for my own footage: `imgsz=1280`, `conf~0.10`** (recall 0.18 -> 0.32 for the fine-tuned model; precision drops to 0.24, acceptable when the goal is flagging). Run A gets *worse* at 1280 (recall 0.162 -> 0.059) because it was trained on larger objects; only the fine-tuned model benefits. Sweep: `runs/own_sweep.csv`.
+
+25 more minutes of Tunisian footage is available (5 videos, 2026-09-20: urban side streets, a wide avenue, a suburban road, a highway/bridge, and one unusable clip aimed at the sky). Next: label a test set from a *different* street so a score is not memorisation of this one, and use the highway clip as a false-alarm check (smooth new asphalt should produce almost no detections).
+
 ## Project layout
 
 ```
@@ -209,7 +254,11 @@ src/
   eda_02_box_size.py       EDA step 2: box sizes in px at 640 input -> reports/eda/02_box_sizes.png
   eda_03_per_image.py      EDA step 3: boxes per image, empty images -> reports/eda/03_boxes_per_image.png
   fiftyone_app.py          loads the dataset into FiftyOne (boxes, source, split, size) and opens the app
-  train.py                 YOLO training + evaluation (all val, dashcam-only val, class-agnostic); runs A/B/C via flags
+  train.py                 YOLO training + evaluation (all val, dashcam-only val, class-agnostic); runs A/B via flags
+  demo_video.py            run a trained model over a video -> annotated video + detection frames
+  own_frames.py            extract frames from my own video, prelabel with a model -> Label Studio import
+  own_eval.py              Label Studio YOLO export -> labels + lists, score any weights on them
+  finetune_own.py          fine-tune on my own frames (repeated, mixed with general images)
   audit_sample.py          random sample of crack boxes -> numbered review sheets in reports/audit/
   eda_04_sources.py        EDA step 4: image properties per source + visual samples -> reports/eda/04_source_samples.jpg
                            (reports/eda/02b_pothole_size_by_source.png: pothole sizes coloured by source)

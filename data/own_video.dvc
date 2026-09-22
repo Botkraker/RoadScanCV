@@ -1,0 +1,6 @@
+outs:
+- md5: 00682489b443dc81b36e126e005a067a.dir
+  size: 4887824047
+  nfiles: 6
+  hash: md5
+  path: own_video
