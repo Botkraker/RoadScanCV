@@ -12,3 +12,8 @@ runs/
 
 # your own footage: faces and number plates, never commit
 data/own/
+
+# Tunisian-only dataset: same footage, same rule
+data/tn/
+*.ts
+space_build/
