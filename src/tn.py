@@ -63,7 +63,31 @@ def predraw(frame, a, shapes=(), boxes=(), trash=True):
         shapes += [("trash", c) for c in (outlines(r.masks) if r.masks is not None else [])]
     h, w = frame.shape[:2]
     polys = [(n, cv2.approxPolyDP(c.astype(np.float32), a.eps, True)[:, 0] / [w, h]) for n, c in shapes if len(c) >= 3]
-    return [(n, p.flatten().tolist()) for n, p in polys if len(p) >= 3]
+    return merge([(n, p.flatten().tolist()) for n, p in polys if len(p) >= 3])
+
+
+def merge(polys, thr=0.3, W=960, H=540):
+    """Same-class shapes overlapping more than thr of the smaller one are ONE object drawn twice: replace them by their union.
+    Shapes that only touch stay apart (neighbouring potholes on a rail crossing are separate objects). Chains merge too."""
+    masks = []
+    for _, p in polys:
+        m = np.zeros((H, W), np.uint8)
+        cv2.fillPoly(m, [(np.array(p).reshape(-1, 2) * [W, H]).astype(np.int32)], 1); masks.append(m)
+    root = list(range(len(polys)))
+    find = lambda i: i if root[i] == i else find(root[i])
+    for i in range(len(polys)):
+        for j in range(i + 1, len(polys)):
+            if polys[i][0] == polys[j][0] and (masks[i] & masks[j]).sum() > thr * min(masks[i].sum(), masks[j].sum()) > 0:
+                root[find(j)] = find(i)
+    out = []
+    for g in sorted({find(i) for i in range(len(polys))}):
+        members = [i for i in range(len(polys)) if find(i) == g]
+        if len(members) == 1:
+            out.append(polys[g]); continue
+        union = np.bitwise_or.reduce([masks[i] for i in members])
+        c = max(cv2.findContours(union, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0], key=cv2.contourArea)
+        out.append((polys[g][0], (cv2.approxPolyDP(c, 1.0, True)[:, 0] / [W, H]).flatten().tolist()))
+    return merge(out, thr, W, H) if len(out) < len(polys) else out   # a union can grow into a new overlap
 
 
 def ls_result(polys):
@@ -108,7 +132,7 @@ def frames(a):
             cv2.imwrite(str(TN / "images" / f"{name}.jpg"), frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
             shapes, boxes = [], []
             if model:
-                r = model.predict(frame, imgsz=640, conf=a.conf, device=a.device, verbose=False)[0]
+                r = model.predict(frame, imgsz=640, conf=a.conf, iou=a.iou, device=a.device, verbose=False)[0]
                 named = [model.names[int(c)] for c in r.boxes.cls]
                 if r.masks is not None:   # a mask model (tn1 on) draws its own outlines
                     shapes = list(zip(named, outlines(r.masks)))
@@ -141,7 +165,7 @@ def serve(a):
         frame = cv2.imread(str(TN / "images" / Path(t["data"]["image"].split("?d=")[-1]).name))
         if (context or {}).get("result"):
             return clicked(frame, context["result"])
-        r = model.predict(frame, imgsz=640, conf=a.conf, device=a.device, verbose=False)[0]
+        r = model.predict(frame, imgsz=640, conf=a.conf, iou=a.iou, device=a.device, verbose=False)[0]
         shapes = list(zip([model.names[int(c)] for c in r.boxes.cls], outlines(r.masks))) if r.masks is not None else []
         return {"model_version": version, "score": float(r.boxes.conf.mean()) if len(r.boxes) else 0.0,
                 "result": ls_result(predraw(frame, a, shapes, trash="trash" not in model.names.values()))}
@@ -169,17 +193,19 @@ def serve(a):
 
 def sync(json_path):
     """Label Studio JSON export (points in % of the image) -> YOLO seg labels. Only submitted frames count."""
-    done = {}
+    done, shapes = {}, 0
     for t in json.loads(Path(json_path).read_text(encoding="utf-8")):
         ann = [x for x in t.get("annotations", []) if not x.get("was_cancelled")]
         if not ann:
             continue
-        lines = [f"{NAMES.index(r['value']['polygonlabels'][0])} " + " ".join(f"{v / 100:.5f}" for pt in r["value"]["points"] for v in pt)
-                 for r in ann[-1]["result"] if r["type"] == "polygonlabels"]
+        raw = [(r["value"]["polygonlabels"][0], [v / 100 for pt in r["value"]["points"] for v in pt])
+               for r in ann[-1]["result"] if r["type"] == "polygonlabels"]
+        polys = merge(raw); shapes += len(raw)
+        lines = [f"{NAMES.index(n)} " + " ".join(f"{v:.5f}" for v in p) for n, p in polys]
         done[Path(t["data"]["image"].split("?d=")[-1]).stem] = lines   # a duplicate task of the same frame: last one wins
     for s, lines in done.items():
         (TN / "labels" / f"{s}.txt").write_text("".join(f"{l}\n" for l in lines))
-    print(f"{len(done)} labeled frames from {Path(json_path).name}")
+    print(f"{len(done)} labeled frames from {Path(json_path).name} | {shapes} shapes -> {sum(map(len, done.values()))} after merging duplicates")
     split()
 
 
@@ -204,7 +230,7 @@ def train(a):
     data = TN / "data.yaml"
     data.write_text(yaml.safe_dump({"path": str(TN), "train": "train.txt", "val": "val.txt", "names": dict(enumerate(NAMES))}))
     YOLO(a.weights).train(data=str(data), epochs=a.epochs, imgsz=640, batch=a.batch, device=a.device, workers=1,
-                          project=str(ROOT / "runs"), name=a.run, exist_ok=True, plots=False, patience=a.patience,
+                          project=str(ROOT / "runs"), name=a.run, exist_ok=True, plots=False, patience=a.patience, hsv_s=a.hsv_s,
                           cache="ram")   # ~250 MB of small copies: the CPU stops re-decoding 1080p JPEGs every step
 
 
@@ -214,6 +240,7 @@ if __name__ == "__main__":
     draw.add_argument("--trash-conf", type=float, default=0.05, help="YOLOE confidence for trash: its scores run very low (a clear bag scored 0.085)")
     draw.add_argument("--eps", type=float, default=8.0, help="outline simplification in pixels: higher = fewer points")
     draw.add_argument("--device", default="0")
+    draw.add_argument("--iou", type=float, default=0.7, help="NMS IoU: lower = overlapping same-class masks suppressed sooner")
     sub.add_parser("seed", parents=[draw])
     p = sub.add_parser("frames", parents=[draw])
     p.add_argument("--video", required=True)
@@ -234,6 +261,7 @@ if __name__ == "__main__":
     p.add_argument("--patience", type=int, default=20, help="stop after this many epochs without a better val score")
     p.add_argument("--resume", action="store_true", help="continue a crashed run from its last epoch")
     p.add_argument("--batch", type=int, default=4)
+    p.add_argument("--hsv-s", type=float, default=0.7, help="saturation jitter (Ultralytics default 0.7); partial desaturation A/B")
     p.add_argument("--device", default="0")
     a = ap.parse_args()
     {"seed": lambda: seed(a), "frames": lambda: frames(a), "serve": lambda: serve(a), "sync": lambda: sync(a.json), "train": lambda: train(a)}[a.cmd]()
