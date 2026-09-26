@@ -229,9 +229,11 @@ def train(a):
         return YOLO(str(ROOT / "runs" / a.run / "weights" / "last.pt")).train(resume=True)
     data = TN / "data.yaml"
     data.write_text(yaml.safe_dump({"path": str(TN), "train": "train.txt", "val": "val.txt", "names": dict(enumerate(NAMES))}))
-    YOLO(a.weights).train(data=str(data), epochs=a.epochs, imgsz=640, batch=a.batch, device=a.device, workers=1,
-                          project=str(ROOT / "runs"), name=a.run, exist_ok=True, plots=False, patience=a.patience, hsv_s=a.hsv_s,
-                          cache="ram")   # ~250 MB of small copies: the CPU stops re-decoding 1080p JPEGs every step
+    # --init-from: copy every layer whose shape matches (backbone + neck of a road-damage BOX model) into a fresh seg model
+    model = YOLO("yolo11s-seg.yaml").load(a.init_from) if a.init_from else YOLO(a.weights)
+    model.train(data=str(data), epochs=a.epochs, imgsz=640, batch=a.batch, device=a.device, workers=1,
+                project=str(ROOT / "runs"), name=a.run, exist_ok=True, plots=False, patience=a.patience, hsv_s=a.hsv_s,
+                freeze=a.freeze or None, cache="ram")   # ~250 MB of small copies: the CPU stops re-decoding 1080p JPEGs every step
 
 
 if __name__ == "__main__":
@@ -261,6 +263,8 @@ if __name__ == "__main__":
     p.add_argument("--patience", type=int, default=20, help="stop after this many epochs without a better val score")
     p.add_argument("--resume", action="store_true", help="continue a crashed run from its last epoch")
     p.add_argument("--batch", type=int, default=4)
+    p.add_argument("--init-from", default="", help="e.g. runs/A/weights/best.pt: start from road-damage features instead of COCO")
+    p.add_argument("--freeze", type=int, default=0, help="freeze the first N layers (10 = the YOLO11 backbone): fewer weights to fit on few frames")
     p.add_argument("--hsv-s", type=float, default=0.7, help="saturation jitter (Ultralytics default 0.7); partial desaturation A/B")
     p.add_argument("--device", default="0")
     a = ap.parse_args()

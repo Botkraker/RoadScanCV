@@ -199,6 +199,17 @@ Details that matter:
 | tn3 | yolo11s-seg | 60 | 57 | 0.241 | 0.282 |
 | tn4 | tn3 best | 12 | 12 | 0.185 | 0.251 |
 
+Runs on the merged labels and the new split (340 train / 85 val frames), all scored the same way on `best.pt` (`ab_val`, `workers=0`):
+
+| Run | Init | Frozen | `hsv_s` | Mask mAP50 | pothole (7) | crack (14) | manhole (19) | trash (61) | other (192) |
+|---|---|---|---|---|---|---|---|---|---|
+| tn4 | tn3 | no | 0.7 | 0.169 | 0.012 | 0.078 | 0.284 | 0.151 | 0.317 |
+| tn5_hsv07 | COCO seg | no | 0.7 | 0.259 | 0.346 | 0.096 | 0.301 | 0.211 | 0.343 |
+| **tn5_hsv035** | COCO seg | no | 0.35 | 0.286 | 0.329 | **0.184** | **0.390** | 0.176 | 0.354 |
+| tn6_freeze | COCO seg | layers 0-9 | 0.35 | **0.296** | 0.682 | 0.035 | 0.241 | 0.193 | 0.328 |
+| tn6_initA | run A (box) | no | 0.35 | 0.232 | 0.345 | 0.034 | 0.310 | 0.096 | 0.374 |
+| tn6_initA_freeze | run A (box) | layers 0-9 | 0.35 | 0.202 | 0.309 | 0.019 | 0.273 | 0.084 | 0.324 |
+
 Trained on a local GTX 1650 (AMP disabled, batch 4, `imgsz=640`). The runs used different amounts of labelled data (the dataset grew between rounds), so they are not a clean comparison. tn1 to tn4 were scored on the old, unmerged val (including the broken frame `TunisianRoad_f07050`). Runs after 2026-09-24 use the merged labels and the new split.
 
 ---
