@@ -206,7 +206,7 @@ Runs on the merged labels and the new split (340 train / 85 val frames), all sco
 | tn4 | tn3 | no | 0.7 | 0.169 | 0.012 | 0.078 | 0.284 | 0.151 | 0.317 |
 | tn5_hsv07 | COCO seg | no | 0.7 | 0.259 | 0.346 | 0.096 | 0.301 | 0.211 | 0.343 |
 | **tn5_hsv035** | COCO seg | no | 0.35 | 0.286 | 0.329 | **0.184** | **0.390** | 0.176 | 0.354 |
-| tn6_freeze | COCO seg | layers 0-9 | 0.35 | **0.296** | 0.682 | 0.035 | 0.241 | 0.193 | 0.328 |
+| **tn6_freeze** (labelling model) | COCO seg | layers 0-9 | 0.35 | **0.296** | 0.682 | 0.035 | 0.241 | 0.193 | 0.328 |
 | tn6_initA | run A (box) | no | 0.35 | 0.232 | 0.345 | 0.034 | 0.310 | 0.096 | 0.374 |
 | tn6_initA_freeze | run A (box) | layers 0-9 | 0.35 | 0.202 | 0.309 | 0.019 | 0.273 | 0.084 | 0.324 |
 

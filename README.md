@@ -2,7 +2,7 @@
 
 A personal computer-vision project: build one clean, unified, leakage-safe dataset for **road damage detection** from six public sources, then train a detector on it.
 
-> Status: dataset built and two baselines trained. 17,732 images from five public sources are unified, cleaned and split without leakage; EDA and a label audit are done. Run A reaches mAP@0.5 **0.45** on dashcam validation but only **0.08** on my own street footage, so the current work is closing that domain gap with 148 self-labeled frames.
+> Status: dataset built and two baselines trained. 17,732 images from five public sources are unified, cleaned and split without leakage; EDA and a label audit are done. Run A reaches mAP@0.5 **0.45** on dashcam validation but only **0.08** on my own street footage, so the work moved to a **Tunisian-only segmentation dataset (TN)**: 425 labelled frames from 5 street videos, 5 classes, polygon masks, built in model-assisted labelling rounds. The best TN model so far reaches mask mAP@0.5 **0.29-0.30** on held-out frames. Full data documentation: [`data.md`](data.md).
 
 Code: <https://github.com/Botkraker/RoadScanCV> | Data (DVC remote): <https://dagshub.com/Botkraker/RoadScan>
 
@@ -126,7 +126,7 @@ Progress: `[x]` done, `[ ]` to do.
 
 1. [x] **Environment**: Python 3.11 + uv, Git, VS Code.
 2. [x] **Download** the sources (Kaggle, Mendeley, RDD2020).
-3. [x] **Version data**: DVC tracks `data/raw` (14.4 GB) and `data/processed` (35,469 files, 3.1 GB); Git tracks only the small `.dvc` pointer files. The DVC remote `origin` is DagsHub. Only `data/processed` is meant to be pushed (verify with `dvc status -c data/processed.dvc`): it is the valuable artifact (cleaning, labels, splits), while `data/raw` is the public original downloads and can be re-downloaded from the sources in the credits.
+3. [x] **Version data**: DVC tracks `data/raw` (14.4 GB) `data/processed` (35,469 files, 3.1 GB), `data/own`, `data/own_video` and `data/tn` (989 files, 201 MB); Git tracks only the small `.dvc` pointer files. The DVC remote `origin` is DagsHub. Only `data/processed` is meant to be pushed (verify with `dvc status -c data/processed.dvc`): it is the valuable artifact (cleaning, labels, splits), while `data/raw` is the public original downloads and can be re-downloaded from the sources in the credits.
 4. [x] **Inventory**: count files and read the labels of every source.
 5. [x] **Unify classes**: `classes.yaml`.
 6. [x] **Convert formats**: RDD VOC, Mendeley YOLO, Pothole Videos masks, Kaggle YOLO and Pothole Mix masks.
@@ -136,8 +136,9 @@ Progress: `[x]` done, `[ ]` to do.
 10. [ ] **Visual label audit** (in progress): [x] browse in FiftyOne (`src/fiftyone_app.py`), [x] estimate the error rate from a random sample (`src/audit_sample.py`, sheets in `reports/audit/`; results below), [ ] model-assisted cleanup after the baseline (see findings below); fix errors in CVAT or Label Studio only if needed.
 11. [ ] **Automate**: a single `make data` (or `just`) rebuild, plus pre-commit and ruff.
 12. [x] **Train**: `src/train.py` (YOLO11s). Runs A and B on a Colab T4 (~2 h each, batch 16). Run C (stronger scale augmentation) was dropped after B showed the close-up data does not hurt dashcam results. The local GTX 1650 (4 GB) also trains with the CUDA build of PyTorch, but AMP is disabled on this card and batch 16 runs out of memory (it falls back to 4), so 30 epochs would take ~8 h there.
-13. [ ] **Own-domain adaptation** (in progress): record video, label frames (`src/own_frames.py` + Label Studio), score (`src/own_eval.py`), fine-tune (`src/finetune_own.py`).
-14. [ ] **Stage 2 (optional)**: severity classifier on box crops.
+13. [x] **Own-domain adaptation (boxes)**: record video, label frames (`src/own_frames.py` + Label Studio), score (`src/own_eval.py`), fine-tune (`src/finetune_own.py`). Result: recall stayed under a third, so the approach changed to step 14.
+14. [ ] **Tunisian segmentation dataset (TN)** (in progress): `src/tn.py`, polygon masks, 5 classes, model-assisted labelling rounds. See the section below.
+15. [ ] **Stage 2 (optional)**: severity classifier on box crops.
 
 ## Known risks and experiment plan
 
@@ -238,6 +239,39 @@ Fine-tuning (`src/finetune_own.py`): start from run A, train on the 110 own trai
 
 25 more minutes of Tunisian footage is available (5 videos, 2026-09-20: urban side streets, a wide avenue, a suburban road, a highway/bridge, and one unusable clip aimed at the sky). Next: label a test set from a *different* street so a score is not memorisation of this one, and use the highway clip as a false-alarm check (smooth new asphalt should produce almost no detections).
 
+## Tunisian segmentation dataset (TN)
+
+Boxes on the public data did not transfer to my street (section above), so I label my own footage directly, as **polygon masks** with **5 classes**: pothole, crack, manhole, trash, other. Everything is in `src/tn.py`; `data.md` documents it in full.
+
+**Labelling loop** (each round is cheaper than the last):
+
+```
+frames every 1.25 s -> current TN model pre-draws outlines (SAM 2.1 outlines boxes, YOLOE finds trash until the model knows it)
+-> I correct them in Label Studio (tn.py serve = live model backend; click an object and SAM outlines it)
+-> tn.py sync (export -> YOLO seg labels, duplicates merged, per-video time split) -> tn.py train -> next round
+```
+
+**Data now:** 555 frames extracted from 5 videos, **425 labelled** (340 train / 85 val, the last 20% of each video's labelled frames), 1,578 masks: other 699, trash 338, pothole 278, manhole 139, crack 124.
+
+**Label cleaning.** A label audit found 1,770 pairs of same-class shapes touching each other; one frame alone held 104 stacked pothole polygons. Models trained on this drew several masks on one object. `sync` now merges same-class shapes that overlap by more than 30% of the smaller one (shapes that only touch, such as neighbouring potholes on a rail crossing, stay separate): 1,811 shapes became 1,578, and 1 borderline pair is left. On 10 fixed val frames, merging at inference removed all 5 duplicate prediction pairs without losing an object; raising conf from 0.15 to 0.25 also removed them but lost 3 of 31 objects.
+
+**Experiments** (same split, same seed, all `best.pt` scored identically; mask mAP@0.5, val object count in brackets):
+
+| Run | Init | Frozen | `hsv_s` | all | pothole (7) | crack (14) | manhole (19) | trash (61) | other (192) |
+|---|---|---|---|---|---|---|---|---|---|
+| tn4 (old labels) | tn3 | no | 0.7 | 0.169 | 0.012 | 0.078 | 0.284 | 0.151 | 0.317 |
+| tn5_hsv07 | COCO seg | no | 0.7 | 0.259 | 0.346 | 0.096 | 0.301 | 0.211 | 0.343 |
+| tn5_hsv035 | COCO seg | no | 0.35 | 0.286 | 0.329 | 0.184 | 0.390 | 0.176 | 0.354 |
+| **tn6_freeze** | COCO seg | backbone (0-9) | 0.35 | **0.296** | 0.682 | 0.035 | 0.241 | 0.193 | 0.328 |
+| tn6_initA | run A (box) | no | 0.35 | 0.232 | 0.345 | 0.034 | 0.310 | 0.096 | 0.374 |
+| tn6_initA_freeze | run A (box) | backbone (0-9) | 0.35 | 0.202 | 0.309 | 0.019 | 0.273 | 0.084 | 0.324 |
+
+- **Cleaning the labels** gave the largest gain (tn4 0.17 to tn5 0.26-0.29 with the same model size).
+- **Less colour jitter** (`hsv_s` 0.35 instead of the default 0.7) helped cracks and manholes. Note that lowering `hsv_s` narrows the random saturation change; it does not desaturate the images.
+- **Freezing the backbone** ties on overall score and trains in half the time (23 min on a GTX 1650); its pothole gain rests on only 7 val potholes, and cracks collapse. **tn6_freeze is the current labelling model.**
+- **Starting from run A** (public road-damage detector) was worse than COCO: run A is a box model, so the mask head starts untrained, and ~340 frames are too few to learn it.
+- **Limit:** val has only 7 potholes and 14 cracks, so differences of a few points are noise. Next: fully label a street the model has never seen (`20260920112134`) as a fixed test set.
+
 ## Project layout
 
 ```
@@ -259,6 +293,7 @@ src/
   own_frames.py            extract frames from my own video, prelabel with a model -> Label Studio import
   own_eval.py              Label Studio YOLO export -> labels + lists, score any weights on them
   finetune_own.py          fine-tune on my own frames (repeated, mixed with general images)
+  tn.py                    Tunisian mask dataset: seed / frames / serve (Label Studio backend) / sync / train
   audit_sample.py          random sample of crack boxes -> numbered review sheets in reports/audit/
   eda_04_sources.py        EDA step 4: image properties per source + visual samples -> reports/eda/04_source_samples.jpg
                            (reports/eda/02b_pothole_size_by_source.png: pothole sizes coloured by source)
@@ -267,6 +302,8 @@ src/
 reports/eda/               EDA figures (in Git)
 reports/image_audit.csv    regenerable audit output (not in Git)
 data/raw/                  original downloads (tracked by DVC, not Git)
+data/own/ data/own_video/  my own footage and box labels (DVC, never Git: faces and number plates)
+data/tn/                   TN frames, polygon labels, train/val lists, Label Studio JSON (DVC)
 data/processed/
   images/  labels/         unified dataset, one label .txt per image (same ID)
   manifest.csv             id, source, group_id, orig_path, ext, size, box counts, orig_split,
@@ -276,6 +313,7 @@ data/processed/
 .dvc/                      DVC configuration
 requirements.txt
 README.md
+data.md                    how every dataset is captured, annotated, split, and its known problems
 ```
 
 ## Setup
@@ -285,6 +323,7 @@ uv venv .venv311 --python 3.11
 .\.venv311\Scripts\Activate.ps1
 uv pip install -r requirements.txt
 dvc pull data/processed.dvc   # downloads the unified dataset from DagsHub (3.1 GB)
+dvc pull data/tn.dvc          # Tunisian mask dataset (201 MB)
 ```
 
 Rebuild the processed data so far (each script supports `--dry-run` to count without writing):
