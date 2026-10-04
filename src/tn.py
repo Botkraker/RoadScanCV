@@ -10,6 +10,12 @@ annotate in Label Studio -> train -> that model pre-draws the next frames -> cor
     python src/tn.py pack --extra 20260920122358           # zip for Colab -> colab/tn_data.zip (+ unlabeled frames of a video)
     python src/tn.py serve --weights runs/tn1/weights/best.pt   # live: Label Studio -> Settings -> Model -> http://localhost:9090
 
+Progress measure, on clips that are never trained on (HOLDOUT, TEST_CLIPS):
+    python src/tn.py testset --video data/raw/tn/20260926_081645.mp4 --weights runs/a/weights/best.pt runs/b/weights/best.pt
+        # -> data/tn_test/<clip>/: test frames, candidates.json, overlays/ for the AI judge (Claude subagents -> ai/*.json)
+    python src/tn.py testreview      # AI verdicts -> review.html: flip what it got wrong, download gt.json into the folder
+    python src/tn.py score --weights runs/<run>/weights/best.pt   # recall, hallucinations, false alarms -> runs/scoreboard.csv
+
 Everything lives in data/tn/: images/, labels/, train.txt, val.txt, import_*.json (drop into Label Studio).
 Labels are YOLO segmentation lines: class x1 y1 x2 y2 ... (normalised polygon).
 Pre-drawing: SAM turns every box into an outline; YOLOE finds trash from text until our own model knows it.
@@ -30,6 +36,14 @@ ROOT = Path(__file__).resolve().parents[1]
 TN = ROOT / "data" / "tn"
 NAMES = ["pothole", "crack", "manhole", "trash", "other"]   # 0-2 as before, so old labels carry over
 BLOCK = 8   # val = every 5th block of 8 consecutive labeled frames (~10 s of video)
+HOLDOUT = {"20260926081645", "VID20260925173443"}   # the test clips (tn.py testset/score): never trained on, never a negative
+CRACKS = {"crack", "lt_crack", "block_crack"}   # "any crack": uzbtrust-based models also have linear and block crack slots
+TEST = ROOT / "data" / "tn_test"
+# tn.py score: clip id -> (video, --roi band of the windshield filter, "gt" = recall on gt.json | {classes} = every shape of
+# these classes is a false alarm). The autoroute clip has real cracks/joints but no potholes, so only potholes count there.
+# --roi bands set by eye: 081645's mount moves (hood top 0.56, then 0.70 from ~f02800); autoroute's hood edge is at 0.86-0.90.
+TEST_CLIPS = {"20260926081645": ("data/raw/tn/20260926_081645.mp4", (0.25, 0.68), "gt"),
+              "VID20260925173443": ("data/raw/tn/VID_20260925_173443.mp4", (0.30, 0.85), {"pothole"})}
 vid = lambda video: re.sub(r"[^A-Za-z0-9]", "", Path(video).stem)
 fit = lambda im: cv2.resize(im, None, fx=1920 / max(im.shape[:2]), fy=1920 / max(im.shape[:2]))   # longest side 1920, shape kept (portrait phones)
 SAM_W, YOLOE_W = "sam2.1_t.pt", "yoloe-11s-seg.pt"
@@ -288,6 +302,8 @@ def split():
     near-copies, so frames are never shuffled, and the train frame touching a val block is dropped as a gap."""
     by_video, counts = {}, [0] * len(NAMES)
     for lab in sorted((TN / "labels").glob("*.txt")):   # ponytail: f%05d sorts right up to 99999 frames (27 min at 60 fps)
+        if lab.stem.rsplit("_f", 1)[0] in HOLDOUT:
+            continue
         by_video.setdefault(lab.stem.rsplit("_f", 1)[0], []).append(f"./images/{lab.stem}.jpg")
         for l in lab.read_text().splitlines():
             counts[int(l.split()[0])] += 1
@@ -309,6 +325,8 @@ def pack(a):
     import zipfile
     out = ROOT / "colab" / "tn_data.zip"; out.parent.mkdir(exist_ok=True)
     lists = {n: (TN / n).read_text().split() for n in ("train.txt", "val.txt")}
+    held = set(a.extra) & HOLDOUT or {l for ls in lists.values() for l in ls if Path(l).stem.rsplit("_f", 1)[0] in HOLDOUT}
+    assert not held, f"{sorted(held)[:3]}: the test clip, never train on it (drop it from --extra / run tn.py sync again)"
     with zipfile.ZipFile(out, "w") as z:   # JPEGs are already compressed: stored, not deflated
         for n, lines in lists.items():
             z.write(TN / n, n)
@@ -319,6 +337,200 @@ def pack(a):
             z.write(f, f"images/{f.name}")
         z.write(ROOT / "src" / "demo_video.py", "demo_video.py")
     print(f"{out} ({out.stat().st_size / 1e6:.0f} MB): train {len(lists['train.txt'])}, val {len(lists['val.txt'])}, unlabeled {len(extra)} frames")
+
+
+dmg = lambda n: "pothole" if n == "pothole" else "crack" if n in CRACKS else None   # model class name -> what the test counts
+
+
+def damage(model, frame, conf, imgsz, device):
+    """[(pothole | crack, normalised flat polygon)] that a mask model draws on a frame."""
+    r = model.predict(frame, imgsz=imgsz, conf=conf, device=device, verbose=False)[0]
+    if r.masks is None:
+        return []
+    h, w = frame.shape[:2]
+    named = [dmg(model.names[int(c)]) for c in r.boxes.cls]
+    return [(n, (p / [w, h]).flatten().tolist()) for n, p in zip(named, outlines(r.masks)) if n and len(p) >= 3]
+
+
+def grid(w, h):
+    """Columns x rows of the lettered grid the AI judge uses to name missed damage (cells about square)."""
+    return (6, round(6 * h / w)) if w <= h else (round(6 * w / h), 6)
+
+
+def cells(rng, w, h):
+    """'C7:D8' (or 'C7') -> that rectangle as a normalised flat polygon."""
+    cols, rows = grid(w, h)
+    (c0, r0), (c1, r1) = [(ord(s[0].upper()) - 65, int(s[1:]) - 1) for s in (rng.split(":") * 2)[:2]]
+    x0, x1, y0, y1 = min(c0, c1) / cols, (max(c0, c1) + 1) / cols, min(r0, r1) / rows, (max(r0, r1) + 1) / rows
+    return [x0, y0, x1, y0, x1, y1, x0, y1]
+
+
+def overlay(frame, shapes):
+    """For the AI judge. Left: the frame with a lettered grid. Right: the candidate shapes, numbered."""
+    h, w = frame.shape[:2]; cols, rows = grid(w, h); left, right = frame.copy(), frame.copy()
+    text = lambda im, s, xy, col, sc: [cv2.putText(im, s, xy, 0, sc, c, t) for c, t in (((0, 0, 0), 6), (col, 2))]
+    for c in range(cols):
+        for r in range(rows):
+            cv2.rectangle(left, (c * w // cols, r * h // rows), ((c + 1) * w // cols, (r + 1) * h // rows), (255, 255, 255), 1)
+            text(left, f"{chr(65 + c)}{r + 1}", (c * w // cols + 4, r * h // rows + 24), (0, 255, 255), 0.7)
+    for k, (n, p) in enumerate(shapes):
+        a = (np.array(p).reshape(-1, 2) * [w, h]).astype(np.int32)
+        cv2.polylines(right, [a], True, (0, 0, 255) if n == "pothole" else (255, 160, 0), 3)
+        x, y = a[a[:, 1].argmin()]
+        text(right, str(k), (min(int(x), w - 50), max(30, int(y) - 8)), (255, 255, 255), 1.1)
+    im = np.hstack([left, np.zeros((h, 12, 3), np.uint8), right]); s = 1400 / h
+    return cv2.resize(im, None, fx=s, fy=s)
+
+
+def testset(a):
+    """Test frames of a held-out clip (same 1.25 s grid as frames/mine) + every pothole/crack shape that any source draws:
+    our models and YOLOE prompted with text, so damage our models miss still gets a candidate. -> data/tn_test/<clip>/
+    Next: Claude subagents judge overlays/*.jpg into ai/*.json, then tn.py testreview."""
+    from ultralytics import YOLO, YOLOE
+    v = vid(a.video); out = TEST / v
+    assert v in HOLDOUT, f"{v} is not in HOLDOUT: a test clip must never be trained on"
+    for d in ("images", "overlays", "ai"):
+        (out / d).mkdir(parents=True, exist_ok=True)
+    trained = {Path(l).name for f in (ROOT / "runs").glob("*/train_run.txt") for l in f.read_text().split()}
+    models = [YOLO(w) for w in a.weights]
+    ye = YOLOE(YOLOE_W); ye.set_classes(["pothole", "crack"])
+    cap = cv2.VideoCapture(a.video); step, i, cands = max(1, round(cap.get(cv2.CAP_PROP_FPS) * a.every)), 0, {}
+    while cap.grab():
+        name = f"{v}_f{i:05d}"
+        if i % step == 0 and f"{name}.jpg" not in trained:   # a frame some run trained on (r2: 44 negatives) is no test
+            frame = fit(cap.retrieve()[1]); h, w = frame.shape[:2]
+            cv2.imwrite(str(out / "images" / f"{name}.jpg"), frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
+            shapes = [s for m in models for s in damage(m, frame, a.conf, 640, a.device)] + damage(ye, frame, a.yoloe_conf, 1280, a.device)
+            cands[name] = merge(shapes, W=w // 2, H=h // 2)
+            cv2.imwrite(str(out / "overlays" / f"{name}.jpg"), overlay(frame, cands[name]), [cv2.IMWRITE_JPEG_QUALITY, 85])
+        i += 1
+    (out / "candidates.json").write_text(json.dumps(cands))
+    print(f"{len(cands)} test frames, {sum(map(len, cands.values()))} candidate shapes -> {out}")
+
+
+def testreview(a):
+    """candidates.json + the AI judge's ai/*.json -> review.html, every shape pre-set to the AI's verdict."""
+    out = TEST / a.clip
+    cands = json.loads((out / "candidates.json").read_text())
+    ai = {k: x for f in sorted((out / "ai").glob("*.json")) for k, x in json.loads(f.read_text()).items()}
+    missing = sorted(set(cands) - set(ai))
+    assert not missing, f"{len(missing)} frames have no AI verdict yet (e.g. {missing[0]})"
+    frames = []
+    for name, shapes in cands.items():
+        v, (h, w) = ai[name], cv2.imread(str(out / "images" / f"{name}.jpg")).shape[:2]
+        assert len(v["verdicts"]) == len(shapes) and set(v["verdicts"]) <= {"pothole", "crack", "no"} \
+            and all(c in ("pothole", "crack") for c, _ in v["missed"]), f"bad AI verdicts for {name}"
+        s = [{"cls": c, "poly": p} for (_, p), c in zip(shapes, v["verdicts"])] + [{"cls": c, "poly": cells(r, w, h), "ai": 1} for c, r in v["missed"]]
+        area = lambda x: cv2.contourArea((np.array(x["poly"]).reshape(-1, 2) * [w, h]).astype(np.float32))
+        frames.append({"name": name, "shapes": sorted(s, key=area, reverse=True)})   # small shapes on top, so they stay clickable
+    (out / "review.html").write_text(GT_REVIEW.replace("__CLIP__", a.clip).replace("__FRAMES__", json.dumps(frames)), encoding="utf-8")
+    print(f"open {out / 'review.html'}, then save gt.json into {out}")
+
+
+GT_REVIEW = """<!doctype html><meta charset="utf-8"><title>Test set review</title>
+<style>body{font:14px sans-serif;margin:0;background:#111;color:#eee}#bar{padding:8px 16px;display:flex;gap:16px;flex-wrap:wrap;align-items:center}
+#wrap{position:relative;display:inline-block;margin:0 16px}#im{display:block;max-height:calc(100vh - 70px);max-width:calc(100vw - 32px)}
+svg{position:absolute;inset:0;width:100%;height:100%}polygon{pointer-events:all;cursor:pointer;stroke-width:3;fill-opacity:.15;vector-effect:non-scaling-stroke}
+.pothole{stroke:#f33;fill:#f33}.crack{stroke:#3cf;fill:#3cf}.no{stroke:#888;fill:none;stroke-width:1.5}.ai{stroke-dasharray:3 4}body.hide svg{display:none}</style>
+<div id="bar"><b id="pos"></b><span>Click a shape: pothole (red) &rarr; crack (blue) &rarr; not damage (grey). &larr;/&rarr; frames, hold H to hide shapes.
+Dotted = a box the AI added where no model drew.</span><span id="sum"></span><button onclick="dl()">Download gt.json</button></div>
+<div id="wrap"><img id="im"><svg id="sv" viewBox="0 0 1 1" preserveAspectRatio="none"></svg></div><script>
+const CLIP = "__CLIP__", F = __FRAMES__, NEXT = {pothole: "crack", crack: "no", no: "pothole"};
+let st = {cls: F.map(f => f.shapes.map(s => s.cls)), seen: [], i: 0};
+try { const s = JSON.parse(localStorage.getItem(CLIP)); if (s && s.cls.length === F.length) st = s; } catch (e) {}
+const pts = p => p.reduce((a, v, k) => a + (k % 2 ? "," : " ") + v, "");
+function show() {
+  const f = F[st.i]; if (!st.seen.includes(st.i)) st.seen.push(st.i);
+  im.src = `images/${f.name}.jpg`;
+  sv.innerHTML = f.shapes.map((s, k) => `<polygon data-k="${k}" class="${st.cls[st.i][k]}${s.ai ? " ai" : ""}" points="${pts(s.poly)}"/>`).join("");
+  const n = c => st.cls.flat().filter(x => x === c).length;
+  pos.textContent = `${f.name}  ${st.i + 1}/${F.length}`;
+  sum.textContent = `looked at ${st.seen.length}/${F.length} | pothole ${n("pothole")} | crack ${n("crack")}`;
+  try { localStorage.setItem(CLIP, JSON.stringify(st)); } catch (e) {}
+}
+sv.onclick = e => { const k = e.target.dataset.k; if (k !== undefined) { st.cls[st.i][k] = NEXT[st.cls[st.i][k]]; show(); } };
+document.onkeydown = e => {
+  if (e.key === "ArrowRight" || e.key === " ") { st.i = Math.min(F.length - 1, st.i + 1); show(); e.preventDefault(); }
+  else if (e.key === "ArrowLeft") { st.i = Math.max(0, st.i - 1); show(); }
+  else if (e.key === "h") document.body.classList.add("hide");
+};
+document.onkeyup = e => { if (e.key === "h") document.body.classList.remove("hide"); };
+function dl() {
+  const left = F.length - st.seen.length;
+  if (left && !confirm(`${left} frames not looked at yet. Download anyway?`)) return;
+  const frames = Object.fromEntries(F.map((f, i) => [f.name, f.shapes.map((s, k) => ({cls: st.cls[i][k], poly: s.poly})).filter(s => s.cls !== "no")]));
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([JSON.stringify({clip: CLIP, frames})], {type: "application/json"}));
+  a.download = "gt.json"; a.click();
+}
+show();
+</script>
+"""
+
+
+def covers(p, q, W=450, H=960, thr=0.1):
+    """Normalised polygons p and q overlap by at least thr of the smaller one: the model 'found' it."""
+    mp, mq = (cv2.fillPoly(np.zeros((H, W), np.uint8), [(np.array(x).reshape(-1, 2) * [W, H]).astype(np.int32)], 1) for x in (p, q))
+    return int((mp & mq).sum()) >= thr * max(1, min(int(mp.sum()), int(mq.sum())))
+
+
+def score(a):
+    """The progress measure on TEST_CLIPS. "gt" clip: share of the gt.json potholes/cracks a same-class model shape covers,
+    plus hallucinations (model shapes touching no real damage). Other clips: every shape of the listed classes is a false alarm.
+    raw = conf only; filtered = demo_video's windshield filters (pothole/crack, --roi band, --persist at 6 fps)."""
+    from datetime import date
+    from ultralytics import YOLO
+    from demo_video import keep
+    sq = lambda x0, y0, x1, y1: [x0, y0, x1, y0, x1, y1, x0, y1]
+    assert covers(sq(.1, .1, .5, .5), sq(.45, .45, .6, .6)) and not covers(sq(.1, .1, .2, .2), sq(.5, .5, .6, .6))
+    assert covers(sq(.1, .50, .9, .51), sq(.4, .49, .45, .52))   # a small model blob on a long thin crack finds it
+    model, show = YOLO(a.weights), {"pothole"} | CRACKS
+    row = {"date": date.today().isoformat(), "model": Path(a.weights).parents[1].name}
+    res = {m: {} for m in ("raw", "filtered")}
+    for clip, (video, roi, kind) in TEST_CLIPS.items():
+        if kind == "gt" and not (TEST / clip / "gt.json").exists():
+            print(f"{clip}: no gt.json yet (tn.py testset + testreview), skipped"); continue
+        cap = cv2.VideoCapture(str(ROOT / video)); fps = cap.get(cv2.CAP_PROP_FPS); s6 = max(1, round(fps / 6))
+        if kind == "gt":
+            gt = json.loads((TEST / clip / "gt.json").read_text())["frames"]
+            tests = {int(n.rsplit("_f", 1)[1]): g for n, g in gt.items()}
+            need = {t - k * s6: t for t in tests for k in range(a.persist)}   # each test frame + the frames its persist looks back on
+        prev, i, n6, tally = [], 0, 0, {m: {"pothole": [0, 0], "crack": [0, 0], "halluc": 0, "shapes": 0} for m in res}
+        while cap.grab():
+            if (i in need) if kind == "gt" else i % s6 == 0:
+                frame = fit(cap.retrieve()[1]); h, w = frame.shape[:2]
+                r = model.predict(frame, imgsz=640, conf=a.conf, device=a.device, verbose=False)[0]
+                if kind == "gt" and i == need[i] - (a.persist - 1) * s6:
+                    prev = []   # a fresh persist run for every test frame
+                rf, prev = keep(r, model.names, prev, show, {}, roi, a.persist)
+                n6 += 1
+                if kind != "gt" or i in tests:
+                    for m, rr in (("raw", r), ("filtered", rf)):
+                        named = [dmg(model.names[int(c)]) for c in rr.boxes.cls]
+                        preds = [(n, (p / [w, h]).flatten().tolist()) for n, p in zip(named, outlines(rr.masks) if rr.masks is not None else []) if n]
+                        t = tally[m]; t["shapes"] += len(preds) if kind == "gt" else sum(n in kind for n, _ in preds)
+                        for g in tests.get(i, []) if kind == "gt" else []:
+                            t[g["cls"]][1] += 1
+                            t[g["cls"]][0] += any(n == g["cls"] and covers(g["poly"], p) for n, p in preds)
+                        if kind == "gt":
+                            t["halluc"] += sum(not any(covers(p, g["poly"]) for g in tests[i]) for _, p in preds)
+            i += 1
+        for m, t in tally.items():
+            if kind == "gt":
+                res[m] |= {"pothole": f"{t['pothole'][0]}/{t['pothole'][1]}", "crack": f"{t['crack'][0]}/{t['crack'][1]}",
+                           "halluc": f"{t['halluc']} on {len(tests)} frames"}
+            else:
+                res[m][f"{'+'.join(sorted(kind))}_fa_per_min_{clip}"] = round(t["shapes"] / (i / fps / 60), 1)
+        print(f"{clip}: {n6} frames analysed")
+    import csv
+    out = ROOT / "runs" / "scoreboard.csv"; rows = [row | {"mode": m} | r for m, r in res.items()]
+    old = list(csv.DictReader(out.open())) if out.exists() else []
+    cols = list(dict.fromkeys(k for r in old + rows for k in r))
+    with out.open("w", newline="") as f:
+        wr = csv.DictWriter(f, cols); wr.writeheader(); wr.writerows(old + rows)
+    for r in rows:
+        print(" | ".join(f"{k} {v}" for k, v in r.items()))
+    print(f"-> {out}")
 
 
 def train(a):
@@ -362,6 +574,17 @@ if __name__ == "__main__":
     p.add_argument("--every", type=float, default=1.25, help="seconds between frames (same grid as frames, so names match)")
     p.add_argument("--conf", type=float, default=0.25); p.add_argument("--device", default="0")
     p = sub.add_parser("pack"); p.add_argument("--extra", nargs="*", default=[], help="video ids whose unlabeled frames go in too")
+    p = sub.add_parser("testset"); p.add_argument("--video", required=True)
+    p.add_argument("--weights", nargs="+", required=True, help="every model whose pothole/crack shapes become candidates")
+    p.add_argument("--every", type=float, default=1.25, help="seconds between test frames (same grid as frames/mine)")
+    p.add_argument("--conf", type=float, default=0.15, help="low on purpose: the AI judge and you reject, nobody draws")
+    p.add_argument("--yoloe-conf", type=float, default=0.05, help="YOLOE text-prompt scores run very low (see --trash-conf)")
+    p.add_argument("--device", default="0")
+    p = sub.add_parser("testreview"); p.add_argument("--clip", default=sorted(HOLDOUT)[0])
+    p = sub.add_parser("score"); p.add_argument("--weights", required=True)
+    p.add_argument("--conf", type=float, default=0.25, help="same as demo_video")
+    p.add_argument("--persist", type=int, default=3, help="filtered mode: shape seen in this many frames in a row at 6 fps")
+    p.add_argument("--device", default="0")
     p = sub.add_parser("train")
     p.add_argument("--run", required=True)
     p.add_argument("--weights", default="yolo11s-seg.pt", help="COCO-pretrained segmentation model")
@@ -374,4 +597,5 @@ if __name__ == "__main__":
     p.add_argument("--hsv-s", type=float, default=0.7, help="saturation jitter (Ultralytics default 0.7); partial desaturation A/B")
     p.add_argument("--device", default="0")
     a = ap.parse_args()
-    {"seed": lambda: seed(a), "frames": lambda: frames(a), "serve": lambda: serve(a), "sync": lambda: sync(a.json), "pack": lambda: pack(a), "mine": lambda: mine(a), "predraw": lambda: predraw_review(a), "train": lambda: train(a)}[a.cmd]()
+    {"seed": lambda: seed(a), "frames": lambda: frames(a), "serve": lambda: serve(a), "sync": lambda: sync(a.json), "pack": lambda: pack(a), "mine": lambda: mine(a), "predraw": lambda: predraw_review(a), "train": lambda: train(a),
+     "testset": lambda: testset(a), "testreview": lambda: testreview(a), "score": lambda: score(a)}[a.cmd]()

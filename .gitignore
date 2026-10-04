@@ -15,6 +15,7 @@ data/own/
 
 # Tunisian-only dataset: same footage, same rule
 data/tn/
+data/tn_test/
 *.ts
 space_build/
 colab/*.zip
