@@ -5,6 +5,9 @@ annotate in Label Studio -> train -> that model pre-draws the next frames -> cor
     python src/tn.py frames --video data/own_video/20260920_115321.mp4 --weights runs/tn1/weights/best.pt
     python src/tn.py sync --json data/project-....json     # Label Studio JSON export -> labels + train/val
     python src/tn.py train --run tn1
+    python src/tn.py mine --weights runs/l640_freeze/weights/best.pt --videos data/raw/tn/<clip>.mp4 ...   # hard negatives
+    python src/tn.py predraw --weights runs/l640_freeze/weights/best.pt   # review frames with real damage -> import_review.json
+    python src/tn.py pack --extra 20260920122358           # zip for Colab -> colab/tn_data.zip (+ unlabeled frames of a video)
     python src/tn.py serve --weights runs/tn1/weights/best.pt   # live: Label Studio -> Settings -> Model -> http://localhost:9090
 
 Everything lives in data/tn/: images/, labels/, train.txt, val.txt, import_*.json (drop into Label Studio).
@@ -26,8 +29,9 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 TN = ROOT / "data" / "tn"
 NAMES = ["pothole", "crack", "manhole", "trash", "other"]   # 0-2 as before, so old labels carry over
-VAL_FRAC = 0.2
+BLOCK = 8   # val = every 5th block of 8 consecutive labeled frames (~10 s of video)
 vid = lambda video: re.sub(r"[^A-Za-z0-9]", "", Path(video).stem)
+fit = lambda im: cv2.resize(im, None, fx=1920 / max(im.shape[:2]), fy=1920 / max(im.shape[:2]))   # longest side 1920, shape kept (portrait phones)
 SAM_W, YOLOE_W = "sam2.1_t.pt", "yoloe-11s-seg.pt"
 TRASH_PROMPTS = ["trash", "garbage bag", "plastic bag", "black plastic bag", "plastic bottle", "litter", "rubbish"]
 
@@ -90,16 +94,16 @@ def merge(polys, thr=0.3, W=960, H=540):
     return merge(out, thr, W, H) if len(out) < len(polys) else out   # a union can grow into a new overlap
 
 
-def ls_result(polys):
+def ls_result(polys, shape=(1080, 1920)):
     """polys: (class name, [x1, y1, x2, y2, ...]) normalised -> Label Studio shapes (points in % of the image)."""
-    return [{"id": f"s{i}", "from_name": "label", "to_name": "image", "type": "polygonlabels", "original_width": 1920, "original_height": 1080,
+    return [{"id": f"s{i}", "from_name": "label", "to_name": "image", "type": "polygonlabels", "original_width": shape[1], "original_height": shape[0],
             "value": {"points": [[x * 100, y * 100] for x, y in zip(p[::2], p[1::2])], "closed": True, "polygonlabels": [c]}}
            for i, (c, p) in enumerate(polys)]
 
 
-def task(name, polys, version):
+def task(name, polys, version, shape=(1080, 1920)):
     """Pre-drawn: you drag the points onto the real outline."""
-    return {"data": {"image": f"/data/local-files/?d=images/{name}"}, "predictions": [{"model_version": "predraw", "result": ls_result(polys)}]}   # one name: Label Studio pre-fills from ONE version
+    return {"data": {"image": f"/data/local-files/?d=images/{name}"}, "predictions": [{"model_version": "predraw", "result": ls_result(polys, shape)}]}   # one name: Label Studio pre-fills from ONE version
 
 
 def seed(a):
@@ -126,7 +130,7 @@ def frames(a):
     while cap.grab():
         name = f"{vid(a.video)}_f{i:05d}"
         if i >= first and (i - first) % step == 0 and not (TN / "labels" / f"{name}.txt").exists():   # skip done frames
-            frame = cv2.resize(cap.retrieve()[1], (1920, 1080))
+            frame = fit(cap.retrieve()[1])
             if a.rotate180:
                 frame = cv2.rotate(frame, cv2.ROTATE_180)
             cv2.imwrite(str(TN / "images" / f"{name}.jpg"), frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
@@ -143,6 +147,75 @@ def frames(a):
         i += 1
     out = TN / f"import_{vid(a.video)}.json"; out.write_text(json.dumps(tasks))
     print(f"{len(tasks)} frames, {sum(len(t['predictions'][0]['result']) for t in tasks)} pre-drawn shapes -> {out.name}")
+
+
+def mine(a):
+    """Hard-negative candidates: frames of unlabeled videos where the model still fires -> data/tn/review/index.html.
+    In that page, click every frame that shows a REAL pothole/crack/manhole/trash; the rest download as negatives.txt."""
+    from ultralytics import YOLO
+    model, rev, fired = YOLO(a.weights), TN / "review", []
+    rev.mkdir(exist_ok=True)
+    for v in a.videos:
+        cap = cv2.VideoCapture(v); step, i = max(1, round(cap.get(cv2.CAP_PROP_FPS) * a.every)), 0
+        while cap.grab():
+            name = f"{vid(v)}_f{i:05d}"
+            if i % step == 0 and not (TN / "labels" / f"{name}.txt").exists():   # a labeled frame is never a negative
+                frame = fit(cap.retrieve()[1])
+                r = model.predict(frame, imgsz=640, conf=a.conf, device=a.device, verbose=False)[0]
+                if len(r.boxes):   # only frames where it fires teach anything; the same name as frames() gives, so no copies
+                    cv2.imwrite(str(TN / "images" / f"{name}.jpg"), frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
+                    im = r.plot(); s = 480 / max(im.shape[:2])
+                    cv2.imwrite(str(rev / f"{name}.jpg"), cv2.resize(im, None, fx=s, fy=s), [cv2.IMWRITE_JPEG_QUALITY, 80])
+                    fired.append(name)
+            i += 1
+        print(f"{Path(v).name}: {len(fired)} frames with predictions so far")
+    (rev / "index.html").write_text(REVIEW.replace("FRAMES", json.dumps(fired)), encoding="utf-8")
+    print(f"open {rev / 'index.html'}")
+
+
+REVIEW = """<!doctype html><meta charset="utf-8"><title>Hard negatives</title>
+<style>body{font:14px sans-serif;margin:16px;background:#111;color:#eee}#g{display:flex;flex-wrap:wrap;gap:6px}
+figure{margin:0;border:4px solid #2a2;cursor:pointer}figure.real{border-color:#d22;opacity:.45}img{height:240px;display:block}
+figcaption{font-size:11px;padding:2px}p{position:sticky;top:0;background:#111;padding:8px 0;margin:0}</style>
+<p>Click every frame that shows a <b>real</b> pothole, crack, manhole or trash, even one the model missed (red = kept out).
+All green frames become background. <button onclick="dl()">Download negatives.txt</button> <span id="n"></span></p>
+<div id="g"></div><script>
+const F = FRAMES, g = document.getElementById("g"), n = document.getElementById("n");
+let real = new Set(); try { real = new Set(JSON.parse(localStorage.getItem("real") || "[]")); } catch (e) {}
+const count = () => { n.textContent = `${F.length - real.size} negatives, ${real.size} kept out`;
+  try { localStorage.setItem("real", JSON.stringify([...real])); } catch (e) {} };
+for (const f of F) {
+  const el = document.createElement("figure"); el.innerHTML = `<img loading="lazy" src="${f}.jpg"><figcaption>${f}</figcaption>`;
+  el.classList.toggle("real", real.has(f));
+  el.onclick = () => { real.has(f) ? real.delete(f) : real.add(f); el.classList.toggle("real"); count(); };
+  g.append(el);
+}
+count();
+function dl() {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([F.filter(f => !real.has(f)).map(f => f + ".jpg\\n").join("")], {type: "text/plain"}));
+  a.download = "negatives.txt"; a.click();
+}
+</script>
+"""
+
+
+def predraw_review(a):
+    """The review frames you kept out of negatives.txt (= real damage) -> Label Studio import with the model's shapes.
+    A uzbtrust-based model also knows classes we don't label (lt_crack, patching...): those shapes are dropped."""
+    from ultralytics import YOLO
+    model, tasks = YOLO(a.weights), []
+    neg = set(Path(a.negatives).read_text().split())
+    for f in sorted((TN / "review").glob("*.jpg")):
+        if f.name in neg or (TN / "labels" / f"{f.stem}.txt").exists():
+            continue
+        frame = cv2.imread(str(TN / "images" / f.name))
+        r = model.predict(frame, imgsz=a.imgsz, conf=a.conf, device=a.device, verbose=False)[0]
+        named = [model.names[int(c)] for c in r.boxes.cls]
+        shapes = [(n, c) for n, c in zip(named, outlines(r.masks) if r.masks is not None else []) if n in NAMES]
+        tasks.append(task(f.name, predraw(frame, a, shapes, trash=False), Path(a.weights).parents[1].name, frame.shape))
+    out = TN / "import_review.json"; out.write_text(json.dumps(tasks))
+    print(f"{len(tasks)} frames, {sum(len(t['predictions'][0]['result']) for t in tasks)} pre-drawn shapes -> {out}")
 
 
 def serve(a):
@@ -210,7 +283,9 @@ def sync(json_path):
 
 
 def split():
-    """Per video, the LAST 20% of its labeled frames is val: neighbouring frames are near-copies, never split randomly."""
+    """Per video, every 5th block of BLOCK consecutive labeled frames is val (20%). Blocks spread val over the whole
+    video, so every class reaches it (a last-20% cut once left potholes with 0 val examples). Neighbouring frames are
+    near-copies, so frames are never shuffled, and the train frame touching a val block is dropped as a gap."""
     by_video, counts = {}, [0] * len(NAMES)
     for lab in sorted((TN / "labels").glob("*.txt")):   # ponytail: f%05d sorts right up to 99999 frames (27 min at 60 fps)
         by_video.setdefault(lab.stem.rsplit("_f", 1)[0], []).append(f"./images/{lab.stem}.jpg")
@@ -218,9 +293,32 @@ def split():
             counts[int(l.split()[0])] += 1
     tr, va = [], []
     for fs in by_video.values():
-        k = round(len(fs) * (1 - VAL_FRAC)); tr += fs[:k]; va += fs[k:]
+        val = lambda i: i // BLOCK % 5 == 4
+        for i, f in enumerate(fs):
+            if val(i):
+                va.append(f)
+            elif not ((i > 0 and val(i - 1)) or (i + 1 < len(fs) and val(i + 1))):
+                tr.append(f)
     (TN / "train.txt").write_text("\n".join(tr) + "\n"); (TN / "val.txt").write_text("\n".join(va) + "\n")
     print(f"train {len(tr)}, val {len(va)} frames from {len(by_video)} videos | masks {dict(zip(NAMES, counts))}")
+
+
+def pack(a):
+    """Zip what training reads (labeled frames, labels, train/val lists) for Colab -> colab/tn_data.zip.
+    --extra adds the unlabeled frames of those videos (hard-negative candidates, no label file) and demo_video.py."""
+    import zipfile
+    out = ROOT / "colab" / "tn_data.zip"; out.parent.mkdir(exist_ok=True)
+    lists = {n: (TN / n).read_text().split() for n in ("train.txt", "val.txt")}
+    with zipfile.ZipFile(out, "w") as z:   # JPEGs are already compressed: stored, not deflated
+        for n, lines in lists.items():
+            z.write(TN / n, n)
+            for l in lines:
+                z.write(TN / l, l); z.write(TN / "labels" / f"{Path(l).stem}.txt", f"labels/{Path(l).stem}.txt")
+        extra = [f for v in a.extra for f in sorted((TN / "images").glob(f"{v}_f*.jpg")) if not (TN / "labels" / f"{f.stem}.txt").exists()]
+        for f in extra:
+            z.write(f, f"images/{f.name}")
+        z.write(ROOT / "src" / "demo_video.py", "demo_video.py")
+    print(f"{out} ({out.stat().st_size / 1e6:.0f} MB): train {len(lists['train.txt'])}, val {len(lists['val.txt'])}, unlabeled {len(extra)} frames")
 
 
 def train(a):
@@ -251,11 +349,19 @@ if __name__ == "__main__":
     p.add_argument("--start", type=float, default=0.0, help="seconds to skip at the beginning")
     p.add_argument("--rotate180", action="store_true", help="phone mounted upside down")
     p.add_argument("--conf", type=float, default=0.15, help="low on purpose: deleting a shape is quicker than drawing one")
+    p = sub.add_parser("predraw", parents=[draw]); p.add_argument("--weights", required=True)
+    p.add_argument("--negatives", default=str(ROOT / "data" / "negatives.txt"), help="review frames listed here are skipped")
+    p.add_argument("--conf", type=float, default=0.15, help="low on purpose: deleting a shape is quicker than drawing one")
+    p.add_argument("--imgsz", type=int, default=640)
     p = sub.add_parser("serve", parents=[draw])
     p.add_argument("--weights", required=True)
     p.add_argument("--conf", type=float, default=0.15, help="low on purpose: deleting a shape is quicker than drawing one")
     p.add_argument("--port", type=int, default=9090)
     p = sub.add_parser("sync"); p.add_argument("--json", required=True)
+    p = sub.add_parser("mine"); p.add_argument("--weights", required=True); p.add_argument("--videos", nargs="+", required=True)
+    p.add_argument("--every", type=float, default=1.25, help="seconds between frames (same grid as frames, so names match)")
+    p.add_argument("--conf", type=float, default=0.25); p.add_argument("--device", default="0")
+    p = sub.add_parser("pack"); p.add_argument("--extra", nargs="*", default=[], help="video ids whose unlabeled frames go in too")
     p = sub.add_parser("train")
     p.add_argument("--run", required=True)
     p.add_argument("--weights", default="yolo11s-seg.pt", help="COCO-pretrained segmentation model")
@@ -268,4 +374,4 @@ if __name__ == "__main__":
     p.add_argument("--hsv-s", type=float, default=0.7, help="saturation jitter (Ultralytics default 0.7); partial desaturation A/B")
     p.add_argument("--device", default="0")
     a = ap.parse_args()
-    {"seed": lambda: seed(a), "frames": lambda: frames(a), "serve": lambda: serve(a), "sync": lambda: sync(a.json), "train": lambda: train(a)}[a.cmd]()
+    {"seed": lambda: seed(a), "frames": lambda: frames(a), "serve": lambda: serve(a), "sync": lambda: sync(a.json), "pack": lambda: pack(a), "mine": lambda: mine(a), "predraw": lambda: predraw_review(a), "train": lambda: train(a)}[a.cmd]()

@@ -17,3 +17,4 @@ data/own/
 data/tn/
 *.ts
 space_build/
+colab/*.zip
